@@ -1,0 +1,11 @@
+May 3, 2025
+
+Gitbash
+
+laravel new laravel-filament
+none
+1 PHPUnit
+mysql
+yes
+cd laravel-filament
+php artisan key:generate
