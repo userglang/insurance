@@ -22,6 +22,7 @@ class ProductAccountResource extends Resource
 
     protected static ?string $navigationIcon = 'heroicon-o-banknotes';
 
+    protected static ?string $navigationGroup = 'Member Management';
     protected static ?string $navigationLabel = 'Member Accounts';
     protected static ?string $pluralModelLabel = 'Member Accounts';
     protected static ?string $modelLabel = 'Member Account';
@@ -35,11 +36,12 @@ class ProductAccountResource extends Resource
     {
         return $form
             ->schema([
+                ...self::getAccountDetails(),
                 ...self::getProductAccountDetails(),
             ]);
     }
 
-    public static function getProductAccountDetails(): array
+    public static function getAccountDetails(): array
     {
         return
         [
@@ -48,9 +50,8 @@ class ProductAccountResource extends Resource
                 ->schema([
                     Forms\Components\Select::make('member_id')
                         ->label('Member')
-                        ->options(
-                            Member::query()->pluck('first_name', 'id')
-                        )
+                        ->relationship('member', 'first_name')
+                        ->getOptionLabelFromRecordUsing(fn ($record) => $record->first_name . ', ' . $record->middle_name. ' ' . $record->last_name. ' ' . $record->suffix)
                         ->searchable()
                         ->preload()
                         ->required()
@@ -65,56 +66,48 @@ class ProductAccountResource extends Resource
                             return Member::create($data);
                         }),
 
-                    Grid::make(2)
-                        ->schema([
-                            Forms\Components\TextInput::make('product_name')
-                                ->label('Product Name')
-                                ->required()
-                                ->maxLength(255)
-                                ->placeholder('Enter product name')
-                                ->helperText('The name of the product or service')
-                                ->autocomplete('off')
-                                ->live(onBlur: true)
-                                ->afterStateUpdated(function (string $state, callable $set) {
-                                    // Auto-capitalize first letter of each word
-                                    $set('product_name', ucwords(strtolower($state)));
-                                }),
 
-                            Forms\Components\TextInput::make('account_number')
-                                ->label('Account Number')
-                                ->required()
-                                ->maxLength(255)
-                                ->placeholder('Enter account number')
-                                ->helperText('Unique identifier for this account')
-                                ->mask('9999-9999-9999') // Adjust mask pattern as needed
-                                ->rule('alpha_num')
-                                ->unique(ignoreRecord: true)
-                                ->live(onBlur: true)
-                                ->afterStateUpdated(function (string $state, callable $set) {
-                                    // Remove spaces and convert to uppercase
-                                    $set('account_number', strtoupper(str_replace(' ', '', $state)));
-                                })
-                                ->suffixAction(
-                                    Forms\Components\Actions\Action::make('generate')
-                                        ->icon('heroicon-o-arrow-path')
-                                        ->action(function (callable $set) {
-                                            $set('account_number', 'ACC-' . strtoupper(Str::random(8)));
-                                        })
-                                        ->tooltip('Generate random account number')
-                                ),
-                        ])
                 ])
         ];
     }
+    public static function getProductAccountDetails(): array
+    {
+        return
+        [
+            Grid::make(2)
+                ->schema([
+                    Forms\Components\TextInput::make('product_name')
+                        ->label('Product Name')
+                        ->required()
+                        ->maxLength(255)
+                        ->placeholder('Enter product name')
+                        ->helperText('The name of the product or service')
+                        ->autocomplete('off')
+                        ->live(onBlur: true)
+                        ->afterStateUpdated(function (string $state, callable $set) {
+                            // Auto-capitalize first letter of each word
+                            $set('product_name', ucwords(strtolower($state)));
+                        }),
+
+                    Forms\Components\TextInput::make('account_number')
+                        ->label('Account Number')
+                        ->required()
+                        ->maxLength(255)
+                        ->placeholder('Enter account number')
+                        ->helperText('Unique identifier for this account')
+                        // ->mask('9999-9999-9999') // Adjust mask pattern as needed
+                        ->rule('alpha_num')
+                        ->unique(ignoreRecord: true),
+                ])
+        ];
+    }
+
 
     public static function table(Table $table): Table
     {
         return $table
             ->columns([
-                Tables\Columns\TextColumn::make('id')
-                    ->label('ID')
-                    ->searchable(),
-                Tables\Columns\TextColumn::make('member.id')
+                Tables\Columns\TextColumn::make('member.full_name')
                     ->searchable(),
                 Tables\Columns\TextColumn::make('product_name')
                     ->searchable(),

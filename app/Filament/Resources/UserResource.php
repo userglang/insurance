@@ -41,24 +41,6 @@ class UserResource extends Resource
         return 'success';
     }
 
-    public static function getGlobalSearchEloquentQuery(): Builder
-    {
-        return parent::getGlobalSearchEloquentQuery()->with(['branch']);
-    }
-
-    public static function getGloballySearchableAttributes(): array
-    {
-        return ['name', 'email', 'branch.branch_name', 'is_active'];
-    }
-
-    public static function getGlobalSearchResultDetails(Model $record): array
-    {
-        return [
-            'Branch' => $record->branch?->branch_name,
-            'Status' => $record->is_active ? 'Active' : 'Inactive',
-        ];
-    }
-
     public static function form(Forms\Form $form): Forms\Form
     {
         return $form->schema([

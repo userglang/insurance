@@ -23,6 +23,7 @@ class InsuranceResource extends Resource
     protected static ?string $model = Insurance::class;
 
     protected static ?string $navigationIcon = 'heroicon-o-rectangle-stack';
+    protected static ?string $navigationGroup = 'Organization';
 
     public static function form(Form $form): Form
     {

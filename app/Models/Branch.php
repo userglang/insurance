@@ -52,4 +52,9 @@ class Branch extends Model
     {
         return $this->hasMany(Branch::class, 'branch_number', 'branch_number');
     }
+
+    public function members()
+    {
+        return $this->hasMany(Member::class, 'branch_number', 'branch_number');
+    }
 }

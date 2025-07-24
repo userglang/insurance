@@ -9,6 +9,7 @@ use App\Models\Subscription;
 use App\Models\Member;
 use App\Models\ProductAccount;
 use Filament\Forms;
+use Filament\Forms\Components\Grid;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Tables;
@@ -20,6 +21,7 @@ use Illuminate\Database\Eloquent\SoftDeletingScope;
 use Filament\Support\Enums\FontWeight;
 use Filament\Tables\Enums\FiltersLayout;
 use Illuminate\Container\Attributes\Auth;
+use Illuminate\Support\Str;
 
 class SubscriptionResource extends Resource
 {
@@ -46,93 +48,159 @@ class SubscriptionResource extends Resource
         return $form
             ->schema([
                 Forms\Components\Section::make('Subscription Details')
-                    ->description('Basic subscription information')
-                    ->schema([
-                        Forms\Components\Select::make('member_id')
-                            ->label('Member Name')
-                            ->relationship('member', 'first_name')
-                            ->getOptionLabelFromRecordUsing(fn ($record) => $record->first_name . ', ' . $record->middle_name. ' ' . $record->last_name. ' ' . $record->suffix)
-                            ->searchable()
-                            ->preload()
-                            ->required()
-                            ->live() // 👈 This makes the field reactive
-                            ->createOptionForm([
-                                ...MemberResource::getPersonalInformation(),
-                                ...MemberResource::getContactInformation(),
-                                ...MemberResource::getGovernmentIDs(),
-                            ])
-                            ->columnSpan(2),
-
-                        Forms\Components\Select::make('insurance_id')
-                            ->label('Insurance Name')
-                            ->relationship('insurance', 'insurance_name')
-                            ->preload()
-                            ->required()
-                            ->placeholder('Select an account...')
-                            ->default(fn () => Insurance::where('is_active', true)->value('id'))
-                            ->columnSpan(1)
-                            ->visible(true), // hides the field
-
-                        Forms\Components\DatePicker::make('activated_at')
-                            ->label('Subscription Date')
-                            ->required()
-                            ->default(now())
-                            ->displayFormat('M j, Y')
-                            ->columnSpan(1),
-
-
-                        Forms\Components\TextInput::make('amount')
-                            ->label('Subscription Amount')
-                            ->required()
-                            ->numeric()
-                            ->prefix('₱')
-                            ->minValue(1)
-                            ->step(0.01)
-                            ->default(160.00)
-                            ->columnSpan(1),
-
-                        Forms\Components\DatePicker::make('payment_date')
-                            ->label('Payment Date')
-                            ->required()
-                            ->default(now())
-                            ->displayFormat('M j, Y')
-                            ->columnSpan(1),
-
-                        Forms\Components\Select::make('product_account_id')
-                            ->label('Account')
-                            ->options(function (callable $get) {
-                                $memberId = $get('member_id');
-
-                                // Always include "CASH"
-                                $options = ['0' => 'CASH'];
-
-                                if ($memberId) {
-                                    $accounts = ProductAccount::where('member_id', $memberId)
-                                        ->pluck('product_name', 'id')
-                                        ->toArray();
-
-                                    $options += $accounts;
-                                }
-
-                                return $options;
-                            })
-                            ->preload()
-                            ->required()
-                            ->placeholder('Select an account...')
-                            ->columnSpan(2),
-                    ])->columns(2),
-
-                Forms\Components\Section::make('Additional Information')
-                    ->schema([
-                        Forms\Components\Textarea::make('remark')
-                            ->label('Notes/Remarks')
-                            ->placeholder('Add any additional notes about this subscription...')
-                            ->rows(3)
-                            ->columnSpanFull(),
-                    ])->collapsible(),
-
-
+                ->description('Basic subscription information')
+                ->schema([
+                    ...self::getMember(),
+                    ...self::getSubscriptionDetails(),
+                    ...self::getProductAccountID(),
+                ])->columns(2),
+                ...self::getAdditionalInformation(),
             ]);
+    }
+    public static function getMember(): array
+    {
+        return
+        [
+            Forms\Components\Select::make('member_id')
+                ->label('Member Name')
+                ->relationship('member', 'first_name')
+                ->getOptionLabelFromRecordUsing(fn ($record) => $record->first_name . ', ' . $record->middle_name. ' ' . $record->last_name. ' ' . $record->suffix)
+                ->searchable()
+                ->preload()
+                ->required()
+                ->live() // 👈 This makes the field reactive
+                ->columnSpan(2),
+        ];
+    }
+
+    public static function getSubscriptionDetails(): array
+    {
+        return
+        [
+            Forms\Components\Select::make('insurance_id')
+                ->label('Insurance Name')
+                ->options(
+                    Insurance::where('is_active', true)
+                        ->pluck('insurance_name', 'id')
+                        ->toArray()
+                )
+                ->preload()
+                ->required()
+                ->placeholder('Select an account...')
+                ->default(fn () => Insurance::where('is_active', true)->value('id'))
+                ->columnSpan(1)
+                ->visible(true), // hides the field
+
+            Forms\Components\DatePicker::make('activated_at')
+                ->label('Subscription Date')
+                ->required()
+                ->default(now())
+                ->displayFormat('M j, Y')
+                ->columnSpan(1),
+
+
+            Forms\Components\TextInput::make('amount')
+                ->label('Subscription Amount')
+                ->required()
+                ->numeric()
+                ->prefix('₱')
+                ->minValue(1)
+                ->step(0.01)
+                ->default(160.00)
+                ->columnSpan(1),
+
+            Forms\Components\DatePicker::make('payment_date')
+                ->label('Payment Date')
+                ->required()
+                ->default(now())
+                ->displayFormat('M j, Y')
+                ->columnSpan(1),
+        ];
+    }
+
+    public static function getProductAccountID(): array
+    {
+        return
+        [
+            Forms\Components\Select::make('product_account_id')
+                ->label('Account')
+                ->options(function (callable $get) {
+                    $memberId = $get('member_id');
+
+                    if (!$memberId) {
+                        return [];
+                    }
+
+                    // Get existing accounts with proper formatting
+                    $accounts = ProductAccount::where('member_id', $memberId)
+                        ->get()
+                        ->mapWithKeys(function ($account) {
+                            $productName = strtoupper($account->product_name);
+
+                            // If product name is CASH, display only CASH
+                            if ($productName === 'CASH') {
+                                $label = 'CASH';
+                            } else {
+                                $label = $productName . ' (' . $account->account_number . ')';
+                            }
+
+                            return [$account->id => $label];
+                        })
+                        ->toArray();
+
+                    // Check if CASH already exists in the database
+                    $cashExists = ProductAccount::where('member_id', $memberId)
+                        ->whereRaw('UPPER(TRIM(product_name)) = ?', ['CASH'])
+                        ->exists();
+
+                    // If CASH doesn't exist, add it as an option with ID 0
+                    if (!$cashExists) {
+                        $accounts = ['0' => 'CASH'] + $accounts;
+                    }
+
+                    return $accounts;
+                })
+                ->createOptionForm([
+                    ...ProductAccountResource::getProductAccountDetails()
+                ])
+                ->createOptionUsing(function (array $data, callable $get) {
+                    $memberId = $get('member_id');
+
+                    if (!$memberId) {
+                        throw new \Exception("Please select a member before creating an account.");
+                    }
+
+                    $productAccount = ProductAccount::create([
+                        'member_id' => $memberId,
+                        'product_name' => $data['product_name'],
+                        'account_number' => $data['account_number'],
+                    ]);
+
+                    return $productAccount->id;
+                })
+                ->disabled(fn (callable $get) => !$get('member_id')) // 👈 disable field until member is selected
+                ->helperText(fn (callable $get) => !$get('member_id') ? 'Select a member first to choose or create an account.' : null)
+                ->reactive()
+                ->required()
+                ->preload()
+                ->placeholder('Select an account...')
+                ->columnSpan(2),
+        ];
+    }
+
+    public static function getAdditionalInformation(): array
+    {
+        return
+        [
+            Forms\Components\Section::make('Additional Information')
+                ->schema([
+                    Forms\Components\Textarea::make('remark')
+                        ->label('Notes/Remarks')
+                        ->placeholder('Add any additional notes about this subscription...')
+                        ->rows(3)
+                        ->columnSpanFull(),
+                ])->collapsible(),
+        ];
     }
 
     public static function table(Table $table): Table
@@ -230,13 +298,6 @@ class SubscriptionResource extends Resource
                 Filter::make('expires_soon')
                     ->label('Expires Soon (30 days)')
                     ->query(fn (Builder $query): Builder => $query->where('expires_at', '<=', now()->addDays(30))->where('expires_at', '>', now())),
-
-
-                SelectFilter::make('member')
-                    ->relationship('member', 'first_name')
-                    ->getOptionLabelFromRecordUsing(fn ($record) => $record->first_name . ', ' . $record->middle_name. ' ' . $record->last_name. ' ' . $record->suffix)
-                    ->searchable()
-                    ->preload(),
 
                 SelectFilter::make('insurance')
                     ->label('Insurance Name')

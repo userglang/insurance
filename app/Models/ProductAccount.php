@@ -42,7 +42,7 @@ class ProductAccount extends Model
      */
     public function member(): BelongsTo
     {
-        return $this->belongsTo(Member::class, 'id', 'member_id');
+        return $this->belongsTo(Member::class);
     }
 
     /**
@@ -50,9 +50,9 @@ class ProductAccount extends Model
      *
      * @return \Illuminate\Database\Eloquent\Relations\HasMany
      */
-    public function subscription()
+    public function subscriptions()
     {
-        return $this->hasMany(Subscription::class, 'product_account_id', 'id');
+        return $this->hasMany(Subscription::class);
     }
 
 }

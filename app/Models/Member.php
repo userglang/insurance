@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
 
 class Member extends Model
@@ -45,6 +46,7 @@ class Member extends Model
         'office_contact_number',
         'office_address',
         'is_active',
+        'status', // ← Added status to fillable
         'remark',
     ];
 
@@ -53,6 +55,7 @@ class Member extends Model
         'is_active' => 'boolean',
         'gender' => 'string',
         'marital_status' => 'string',
+        'status' => 'string', // ← Cast status as string
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];
@@ -76,7 +79,46 @@ class Member extends Model
             if (empty($model->id)) {
                 $model->id = (string) Str::uuid();
             }
+
+            if (Auth::check()) {
+                $model->status = 'accepted'; // Automatically accept if created by an authenticated user
+            }
         });
+    }
+
+    // Scopes
+    public function scopeActive($query)
+    {
+        return $query->where('is_active', true);
+    }
+    public function scopeArchive($query)
+    {
+        return $query->where('is_active', false);
+    }
+
+    public function scopeNewThisMonth($query)
+    {
+        return $query->where('created_at', '>=', now()->startOfMonth());
+    }
+
+    public function scopeStatus($query, string $status)
+    {
+        return $query->where('status', $status);
+    }
+
+    public function scopePending($query)
+    {
+        return $query->status('pending');
+    }
+
+    public function scopeAccepted($query)
+    {
+        return $query->status('accepted');
+    }
+
+    public function scopeDeclined($query)
+    {
+        return $query->status('declined');
     }
 
     // Relationships
@@ -87,12 +129,20 @@ class Member extends Model
 
     public function productAccounts(): HasMany
     {
-        return $this->hasMany(ProductAccount::class, 'member_id', 'id');
+        return $this->hasMany(ProductAccount::class);
     }
 
+    public function subscriptions(): HasMany
+    {
+        return $this->hasMany(Subscription::class);
+    }
+
+    public function latestSubscription()
+    {
+        return $this->hasOne(Subscription::class)->latestOfMany('expires_at');
+    }
 
     // Accessors
-
     public function getFullNameAttribute(): string
     {
         $parts = array_filter([
@@ -164,5 +214,43 @@ class Member extends Model
         $office = $this->office_contact_number ?? 'N/A';
 
         return "Mobile: $mobile, Office: $office";
+    }
+
+    /**
+     * Advanced similarity checking - handles null middle names gracefully
+     */
+    public static function findSimilarMembers($firstName, $lastName, $middleName = null, $birthDate = null, $excludeId = null)
+    {
+        $query = static::where('first_name', $firstName)
+            ->where('last_name', $lastName);
+
+        if ($excludeId) {
+            $query->where('id', '!=', $excludeId);
+        }
+
+        if ($birthDate) {
+            $query->where('birth_date', $birthDate);
+        }
+
+        // Check both with and without middle name
+        $exactMatch = clone $query;
+        if ($middleName) {
+            $exactMatch->where('middle_name', $middleName);
+        } else {
+            $exactMatch->whereNull('middle_name');
+        }
+
+        $similarMatch = clone $query;
+        if ($middleName) {
+            $similarMatch->where(function ($q) use ($middleName) {
+                $q->where('middle_name', 'LIKE', "%$middleName%")
+                    ->orWhereNull('middle_name');
+            });
+        }
+
+        return [
+            'exact' => $exactMatch->get(),
+            'similar' => $similarMatch->get()
+        ];
     }
 }

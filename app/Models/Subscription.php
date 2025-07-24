@@ -76,7 +76,7 @@ class Subscription extends Model
             if (empty($model->product_account_id) || $model->product_account_id == 0) {
                 $productAccount = ProductAccount::create([
                     'member_id'      => $model->member_id,
-                    'product_name'   => 'Cash',
+                    'product_name'   => 'CASH',
                     'account_number' => 0,
                 ]);
 
@@ -91,16 +91,27 @@ class Subscription extends Model
         });
 
         static::updating(function ($model) {
+
+            // Update expires_at if subscription is being reactivated
+            if ($model->isDirty('is_active') && $model->is_active && empty($model->expires_at)) {
+                $model->expires_at = now()->addDays(365);
+            }
+            // Reset expires_at if changing activation date
+            elseif ($model->isDirty('activated_at') && !empty($model->activated_at)) {
+                $model->expires_at = Carbon::parse($model->activated_at)->addDays(365);
+            }
+
             if (Auth::check()) {
                 $model->updated_by = Auth::id();
             }
         });
+
     }
 
     /**
      * Get the member that owns the subscription.
      */
-    public function member(): BelongsTo
+    public function member()
     {
         return $this->belongsTo(Member::class);
     }
@@ -108,9 +119,9 @@ class Subscription extends Model
     /**
      * Get the product account for this subscription.
      */
-    public function productAccount(): BelongsTo
+    public function productAccount()
     {
-        return $this->belongsTo(ProductAccount::class, 'product_account_id', 'id');
+        return $this->belongsTo(ProductAccount::class);
     }
 
     /**
@@ -118,9 +129,9 @@ class Subscription extends Model
      *
      * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
      */
-    public function insurance(): BelongsTo
+    public function insurance()
     {
-        return $this->belongsTo(Insurance::class, 'insurance_id', 'id');
+        return $this->belongsTo(Insurance::class);
     }
 
     /**
@@ -162,6 +173,11 @@ class Subscription extends Model
     public function scopeFuture($query)
     {
         return $query->where('activated_at', '>', now());
+    }
+
+    public function scopeExpiringSoon($query)
+    {
+        return $query->whereBetween('expires_at', [now(), now()->addDays(30)]);
     }
 
     /**
