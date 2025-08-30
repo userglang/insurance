@@ -3,10 +3,10 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\MemberResource\Pages;
-use App\Filament\Resources\MemberResource\RelationManagers;
 use App\Models\Branch;
 use App\Models\Member;
-use Filament\Actions\Action;
+use App\Jobs\ProcessBulkMemberOperation;
+use App\Services\MemberExportService;
 use Filament\Forms;
 use Filament\Forms\Components\Wizard;
 use Filament\Forms\Form;
@@ -16,15 +16,15 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\SoftDeletingScope;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use League\Csv\Writer;
 
 class MemberResource extends Resource
 {
     protected static ?string $model = Member::class;
-
     protected static ?string $navigationIcon = 'heroicon-o-identification';
     protected static ?string $navigationGroup = 'Member Management';
     protected static ?string $navigationLabel = 'Members';
@@ -33,62 +33,62 @@ class MemberResource extends Resource
 
     public static function getNavigationBadge(): ?string
     {
-        $expiringSoonCount = Member::active()->accepted()
-            ->whereHas('subscriptions', fn (Builder $q) => $q->expiringSoon())
-            ->count();
+        // Cache expensive badge calculations for 5 minutes
+        return Cache::remember('member_navigation_badge', 300, function () {
+            $counts = DB::table('members as m')
+                ->leftJoin('subscriptions as s', function ($join) {
+                    $join->on('m.id', '=', 's.member_id')
+                        ->whereRaw('s.id = (SELECT id FROM subscriptions WHERE member_id = m.id ORDER BY expires_at DESC LIMIT 1)');
+                })
+                ->where('m.is_active', true)
+                ->where('m.status', 'accepted')
+                ->selectRaw('
+                    COUNT(CASE WHEN s.expires_at BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 30 DAY) THEN 1 END) as expiring_soon,
+                    COUNT(CASE WHEN s.expires_at < NOW() THEN 1 END) as expired
+                ')
+                ->first();
 
-        $expiredCount = Member::active()->accepted()
-            ->whereHas('latestSubscription', fn (Builder $q) => $q->where('expires_at', '<', now()))
-            ->count();
-
-        $total = $expiringSoonCount + $expiredCount;
-
-        return $total > 0 ? (string) $total : null;
+            $total = ($counts->expiring_soon ?? 0) + ($counts->expired ?? 0);
+            return $total > 0 ? (string) $total : null;
+        });
     }
 
     public static function getNavigationBadgeColor(): ?string
     {
-        return Member::active()->accepted()
-            ->where(function (Builder $query) {
-                $query->whereHas('subscriptions', fn (Builder $q) => $q->expiringSoon())
-                    ->orWhereHas('latestSubscription', fn (Builder $q) => $q->where('expires_at', '<', now()));
-            })
-            ->exists()
-            ? 'warning'
-            : 'gray';
+        return self::getNavigationBadge() ? 'warning' : 'gray';
     }
 
     public static function getGloballySearchableAttributes(): array
     {
-        return [
-            'cid',
-            'first_name',
-            'last_name',
-            'email',
-        ];
+        return ['cid', 'first_name', 'last_name', 'email'];
     }
 
     public static function getGlobalSearchEloquentQuery(): Builder
     {
         return parent::getGlobalSearchEloquentQuery()
-            ->with('branch'); // eager load to avoid N+1 issues
+            ->select(['id', 'cid', 'first_name', 'last_name', 'branch_number', 'is_active'])
+            // ->where('is_active', true)
+            ->orderBy('is_active', 'desc')
+            ->with('branch:id,branch_number,branch_name');
     }
 
     public static function getGlobalSearchResultTitle(Model $record): string
     {
-        // Return empty string to remove "member" header
         return $record->full_name;
     }
 
     public static function getGlobalSearchResultDetails(Model $record): array
     {
         return [
-            __('Branch') => optional($record->branch)->branch_name ?? 'N/A',
+            __('Branch') => $record->branch?->branch_name ?? 'N/A',
             __('Status') => $record->is_active ? 'Active' : 'Inactive',
         ];
     }
 
-
+    public static function getGlobalSearchResultUrl(Model $record): string
+    {
+        return static::getUrl('view', ['record' => $record]);
+    }
 
     public static function form(Form $form): Form
     {
@@ -98,20 +98,17 @@ class MemberResource extends Resource
                     ->columnSpanFull()
                     ->schema([
                         Wizard\Step::make('Personal Information')
-                            ->schema(self::getPersonalInformation(),),
+                            ->schema(self::getPersonalInformation()),
                         Wizard\Step::make('Contact Information')
                             ->schema(self::getContactInformation()),
                         Wizard\Step::make('Employment Information')
                             ->schema(self::getEmploymentInformation()),
                         Wizard\Step::make('Others')
-                            ->schema(
-                                array_merge(
-                                    self::getGovernmentIDs(),
-                                    self::getAdditionalInformation()
-                                )
-                            ),
+                            ->schema([
+                                ...self::getGovernmentIDs(),
+                                ...self::getAdditionalInformation()
+                            ]),
                     ]),
-
             ])
             ->columns(1)
             ->statePath('data');
@@ -119,315 +116,358 @@ class MemberResource extends Resource
 
     public static function getPersonalInformation(): array
     {
-        return
-            [
-                Forms\Components\Section::make('Personal Information')
-                    ->description('Basic personal details')
-                    ->schema([
-                        Forms\Components\Grid::make(2)
-                            ->schema([
-                                Forms\Components\TextInput::make('cid')
-                                    ->label('CID')
-                                    ->maxLength(255)
-                                    ->helperText('Leave empty for auto-generation')
-                                    ->default(null),
+        return [
+            Forms\Components\Section::make('Personal Information')
+                ->description('Basic personal details')
+                ->schema([
+                    Forms\Components\Grid::make(2)
+                        ->schema([
+                            Forms\Components\TextInput::make('cid')
+                                ->label('CID')
+                                ->maxLength(255)
+                                ->helperText('Leave empty for auto-generation')
+                                ->default(null)
+                                ->unique(ignoreRecord: true),
 
-                                Forms\Components\Select::make('branch_number')
-                                    ->label('Branch')
-                                    ->placeholder('Select a branch')
-                                    ->options(
-                                        Branch::query()->pluck('branch_name', 'branch_number')
-                                    )
-                                    ->searchable()
-                                    ->preload()
-                                    ->required()
-                                    ->helperText('Select the branch this client belongs to'),
-                            ]),
+                            Forms\Components\Select::make('branch_number')
+                                ->label('Branch')
+                                ->placeholder('Select a branch')
+                                ->options(fn () => Cache::remember('branches_options', 3600,
+                                    fn () => Branch::pluck('branch_name', 'branch_number')
+                                ))
+                                ->searchable()
+                                ->preload()
+                                ->required()
+                                ->helperText('Select the branch this client belongs to'),
+                        ]),
 
-                        Forms\Components\Grid::make(3)
-                            ->schema([
-                                Forms\Components\TextInput::make('first_name')
-                                    ->label('First Name')
-                                    ->placeholder('Enter first name')
-                                    ->required()
-                                    ->maxLength(255)
-                                    ->autocomplete('given-name'),
+                    Forms\Components\Grid::make(3)
+                        ->schema([
+                            Forms\Components\TextInput::make('first_name')
+                                ->label('First Name')
+                                ->placeholder('Enter first name')
+                                ->required()
+                                ->maxLength(100)
+                                ->rule('regex:/^[a-zA-Z\s\-\.\']+$/')
+                                ->autocomplete('given-name'),
 
-                                Forms\Components\TextInput::make('middle_name')
-                                    ->label('Middle Name')
-                                    ->placeholder('Enter middle name (optional)')
-                                    ->maxLength(255)
-                                    ->autocomplete('additional-name'),
+                            Forms\Components\TextInput::make('middle_name')
+                                ->label('Middle Name')
+                                ->placeholder('Enter middle name (optional)')
+                                ->maxLength(100)
+                                ->rule('regex:/^[a-zA-Z\s\-\.\']*$/')
+                                ->autocomplete('additional-name'),
 
-                                Forms\Components\TextInput::make('last_name')
-                                    ->label('Last Name')
-                                    ->placeholder('Enter last name')
-                                    ->required()
-                                    ->maxLength(255)
-                                    ->autocomplete('family-name'),
-                            ]),
+                            Forms\Components\TextInput::make('last_name')
+                                ->label('Last Name')
+                                ->placeholder('Enter last name')
+                                ->required()
+                                ->maxLength(100)
+                                ->rule('regex:/^[a-zA-Z\s\-\.\']+$/')
+                                ->autocomplete('family-name'),
+                        ]),
 
-                        Forms\Components\Grid::make(2)
-                            ->schema([
-                                Forms\Components\TextInput::make('suffix')
-                                    ->label('Suffix')
-                                    ->placeholder('Jr., Sr., III, etc.')
-                                    ->maxLength(255)
-                                    ->autocomplete('honorific-suffix'),
+                    Forms\Components\Grid::make(2)
+                        ->schema([
+                            Forms\Components\TextInput::make('suffix')
+                                ->label('Suffix')
+                                ->placeholder('Jr., Sr., III, etc.')
+                                ->maxLength(10)
+                                ->autocomplete('honorific-suffix'),
 
-                                Forms\Components\DatePicker::make('birth_date')
-                                    ->label('Date of Birth')
-                                    ->placeholder('Select birth date')
-                                    ->required()
-                                    ->displayFormat('F j, Y')
-                                    ->format('Y-m-d')
-                                    ->maxDate(now()->subYears(18))
-                                    ->helperText('Must be at least 18 years old'),
-                            ]),
+                            Forms\Components\DatePicker::make('birth_date')
+                                ->label('Date of Birth')
+                                ->placeholder('Select birth date')
+                                ->required()
+                                ->displayFormat('F j, Y')
+                                ->format('Y-m-d')
+                                ->maxDate(now()->subYears(18))
+                                ->beforeOrEqual('today')
+                                ->helperText('Must be at least 18 years old'),
+                        ]),
 
-                        Forms\Components\Textarea::make('birth_place')
-                            ->label('Place of Birth')
-                            ->placeholder('Enter place of birth')
-                            ->rows(2)
-                            ->columnSpanFull(),
+                    Forms\Components\Textarea::make('birth_place')
+                        ->label('Place of Birth')
+                        ->placeholder('Enter place of birth')
+                        ->rows(2)
+                        ->maxLength(500)
+                        ->columnSpanFull(),
 
-                        Forms\Components\Grid::make(2)
-                            ->schema([
-                                Forms\Components\Select::make('gender')
-                                    ->label('Gender')
-                                    ->placeholder('Select gender')
-                                    ->options([
-                                        'Male' => 'Male',
-                                        'Female' => 'Female',
-                                        'Other' => 'Other',
-                                    ])
-                                    ->required(),
+                    Forms\Components\Grid::make(2)
+                        ->schema([
+                            Forms\Components\Select::make('gender')
+                                ->label('Gender')
+                                ->placeholder('Select gender')
+                                ->options([
+                                    'Male' => 'Male',
+                                    'Female' => 'Female',
+                                    'Other' => 'Other',
+                                ])
+                                ->required(),
 
-                                Forms\Components\Select::make('marital_status')
-                                    ->label('Marital Status')
-                                    ->placeholder('Select marital status')
-                                    ->options([
-                                        'Single' => 'Single',
-                                        'Married' => 'Married',
-                                        'Widowed' => 'Widowed',
-                                        'Separated' => 'Separated',
-                                    ])
-                                    ->required(),
-                            ]),
-                    ]),
-            ];
+                            Forms\Components\Select::make('marital_status')
+                                ->label('Marital Status')
+                                ->placeholder('Select marital status')
+                                ->options([
+                                    'Single' => 'Single',
+                                    'Married' => 'Married',
+                                    'Widowed' => 'Widowed',
+                                    'Separated' => 'Separated',
+                                    'Divorced' => 'Divorced',
+                                ])
+                                ->required(),
+                        ]),
+                ]),
+        ];
     }
 
     public static function getContactInformation(): array
     {
-        return
-            [
-                Forms\Components\Section::make('Contact Information')
-                    ->description('Email, phone, and address details')
-                    ->schema([
-                        Forms\Components\Grid::make(2)
-                            ->schema([
-                                Forms\Components\TextInput::make('email')
-                                    ->label('Email Address')
-                                    ->placeholder('Enter email address')
-                                    ->email()
-                                    ->maxLength(255)
-                                    ->suffixIcon('heroicon-m-envelope')
-                                    ->autocomplete('email')
-                                    ->unique(ignoreRecord: true)
-                                    ->helperText('We will use this for important notifications'),
+        return [
+            Forms\Components\Section::make('Contact Information')
+                ->description('Email, phone, and address details')
+                ->schema([
+                    Forms\Components\Grid::make(2)
+                        ->schema([
+                            Forms\Components\TextInput::make('email')
+                                ->label('Email Address')
+                                ->placeholder('Enter email address')
+                                ->email()
+                                ->maxLength(255)
+                                ->suffixIcon('heroicon-m-envelope')
+                                ->autocomplete('email')
+                                ->unique(ignoreRecord: true)
+                                ->helperText('We will use this for important notifications'),
 
-                                Forms\Components\TextInput::make('contact_number')
-                                    ->label('Contact Number')
-                                    ->placeholder('+63 912 345 6789')
-                                    ->maxLength(255)
-                                    ->suffixIcon('heroicon-m-phone')
-                                    ->helperText('Include country code if international'),
-                            ]),
+                            Forms\Components\TextInput::make('contact_number')
+                                ->label('Contact Number')
+                                ->placeholder('+63 912 345 6789')
+                                ->maxLength(20)
+                                ->tel()
+                                ->suffixIcon('heroicon-m-phone')
+                                ->rule('regex:/^[\+]?[0-9\s\-\(\)]{7,20}$/')
+                                ->helperText('Include country code if international'),
+                        ]),
 
-                        Forms\Components\Fieldset::make('Address')
-                            ->schema([
-                                Forms\Components\Grid::make(2)
-                                    ->schema([
-                                        Forms\Components\TextInput::make('house_number')
-                                            ->label('House/Unit Number')
-                                            ->placeholder('123, Unit 4B, etc.')
-                                            ->maxLength(255)
-                                            ->autocomplete('address-line1'),
+                    Forms\Components\Fieldset::make('Address')
+                        ->schema([
+                            Forms\Components\Grid::make(2)
+                                ->schema([
+                                    Forms\Components\TextInput::make('house_number')
+                                        ->label('House/Unit Number')
+                                        ->placeholder('123, Unit 4B, etc.')
+                                        ->maxLength(50)
+                                        ->autocomplete('address-line1'),
 
-                                        Forms\Components\TextInput::make('street')
-                                            ->label('Street')
-                                            ->placeholder('Enter street name')
-                                            ->maxLength(255)
-                                            ->autocomplete('address-line2'),
-                                    ]),
+                                    Forms\Components\TextInput::make('street')
+                                        ->label('Street')
+                                        ->placeholder('Enter street name')
+                                        ->maxLength(255)
+                                        ->autocomplete('address-line2'),
+                                ]),
 
-                                Forms\Components\Grid::make(2)
-                                    ->schema([
-                                        Forms\Components\TextInput::make('barangay')
-                                            ->label('Barangay')
-                                            ->placeholder('Enter barangay')
-                                            ->maxLength(255)
-                                            ->autocomplete('address-level4'),
+                            Forms\Components\Grid::make(2)
+                                ->schema([
+                                    Forms\Components\TextInput::make('barangay')
+                                        ->label('Barangay')
+                                        ->placeholder('Enter barangay')
+                                        ->maxLength(255)
+                                        ->autocomplete('address-level4'),
 
-                                        Forms\Components\TextInput::make('city')
-                                            ->label('City/Municipality')
-                                            ->placeholder('Enter city or municipality')
-                                            ->required()
-                                            ->maxLength(255)
-                                            ->autocomplete('address-level2'),
-                                    ]),
+                                    Forms\Components\TextInput::make('city')
+                                        ->label('City/Municipality')
+                                        ->placeholder('Enter city or municipality')
+                                        ->required()
+                                        ->maxLength(255)
+                                        ->autocomplete('address-level2'),
+                                ]),
 
-                                Forms\Components\Grid::make(2)
-                                    ->schema([
-                                        Forms\Components\TextInput::make('province')
-                                            ->label('Province')
-                                            ->placeholder('Enter province')
-                                            ->required()
-                                            ->maxLength(255)
-                                            ->autocomplete('address-level1'),
+                            Forms\Components\Grid::make(2)
+                                ->schema([
+                                    Forms\Components\TextInput::make('province')
+                                        ->label('Province')
+                                        ->placeholder('Enter province')
+                                        ->required()
+                                        ->maxLength(255)
+                                        ->autocomplete('address-level1'),
 
-                                        Forms\Components\TextInput::make('zipcode')
-                                            ->label('ZIP Code')
-                                            ->placeholder('1234')
-                                            ->maxLength(10)
-                                            ->numeric()
-                                            ->autocomplete('postal-code'),
-                                    ]),
-                            ]),
-                    ]),
-            ];
-    }
-
-    public static function getGovernmentIDs(): array
-    {
-        return
-            [
-                Forms\Components\Section::make('Government IDs')
-                    ->description('Social Security and Tax identification numbers')
-                    ->schema([
-                        Forms\Components\Grid::make(2)
-                            ->schema([
-                                Forms\Components\TextInput::make('sss_gsis')
-                                    ->label('SSS/GSIS Number')
-                                    ->placeholder('12-3456789-0')
-                                    ->maxLength(255)
-                                    ->mask('99-9999999-9')
-                                    ->helperText('Format: XX-XXXXXXX-X'),
-
-                                Forms\Components\TextInput::make('tin')
-                                    ->label('TIN Number')
-                                    ->placeholder('123-456-789-000')
-                                    ->maxLength(255)
-                                    ->mask('999-999-999-999')
-                                    ->helperText('Format: XXX-XXX-XXX-XXX'),
-                            ]),
-                    ]),
-            ];
+                                    Forms\Components\TextInput::make('zipcode')
+                                        ->label('ZIP Code')
+                                        ->placeholder('1234')
+                                        ->maxLength(10)
+                                        ->numeric()
+                                        ->rule('digits_between:4,10')
+                                        ->autocomplete('postal-code'),
+                                ]),
+                        ]),
+                ]),
+        ];
     }
 
     public static function getEmploymentInformation(): array
     {
-        return
-            [
-                Forms\Components\Section::make('Employment Information')
-                    ->description('Work and employment details')
-                    ->schema([
-                        Forms\Components\Grid::make(2)
-                            ->schema([
-                                Forms\Components\TextInput::make('occupation')
-                                    ->label('Occupation')
-                                    ->placeholder('Enter occupation')
-                                    ->maxLength(255)
-                                    ->autocomplete('organization-title'),
+        return [
+            Forms\Components\Section::make('Employment Information')
+                ->description('Work and employment details')
+                ->schema([
+                    Forms\Components\Grid::make(2)
+                        ->schema([
+                            Forms\Components\TextInput::make('occupation')
+                                ->label('Occupation')
+                                ->placeholder('Enter occupation')
+                                ->maxLength(255)
+                                ->autocomplete('organization-title'),
 
-                                Forms\Components\Select::make('employment_status')
-                                    ->label('Employment Status')
-                                    ->placeholder('Select employment status')
-                                    ->options([
-                                        'employed' => 'Employed',
-                                        'self_employed' => 'Self-Employed',
-                                        'unemployed' => 'Unemployed',
-                                        'student' => 'Student',
-                                        'retired' => 'Retired',
-                                        'other' => 'Other',
-                                    ]),
-                            ]),
+                            Forms\Components\Select::make('employment_status')
+                                ->label('Employment Status')
+                                ->placeholder('Select employment status')
+                                ->options([
+                                    'employed' => 'Employed',
+                                    'self_employed' => 'Self-Employed',
+                                    'unemployed' => 'Unemployed',
+                                    'student' => 'Student',
+                                    'retired' => 'Retired',
+                                    'other' => 'Other',
+                                ]),
+                        ]),
 
-                        Forms\Components\Grid::make(2)
-                            ->schema([
-                                Forms\Components\TextInput::make('name_of_employer')
-                                    ->label('Employer Name')
-                                    ->placeholder('Enter employer name')
-                                    ->maxLength(255)
-                                    ->autocomplete('organization'),
+                    Forms\Components\Grid::make(2)
+                        ->schema([
+                            Forms\Components\TextInput::make('name_of_employer')
+                                ->label('Employer Name')
+                                ->placeholder('Enter employer name')
+                                ->maxLength(255)
+                                ->autocomplete('organization'),
 
-                                Forms\Components\TextInput::make('office_contact_number')
-                                    ->label('Office Contact Number')
-                                    ->placeholder('+63 2 123 4567')
-                                    ->maxLength(255)
-                                    ->suffixIcon('heroicon-m-building-office'),
-                            ]),
+                            Forms\Components\TextInput::make('office_contact_number')
+                                ->label('Office Contact Number')
+                                ->placeholder('+63 2 123 4567')
+                                ->maxLength(20)
+                                ->tel()
+                                ->rule('regex:/^[\+]?[0-9\s\-\(\)]{7,20}$/')
+                                ->suffixIcon('heroicon-m-building-office'),
+                        ]),
 
-                        Forms\Components\Textarea::make('office_address')
-                            ->label('Office Address')
-                            ->placeholder('Enter complete office address')
-                            ->rows(3)
-                            ->columnSpanFull(),
-                    ]),
-            ];
+                    Forms\Components\Textarea::make('office_address')
+                        ->label('Office Address')
+                        ->placeholder('Enter complete office address')
+                        ->rows(3)
+                        ->maxLength(1000)
+                        ->columnSpanFull(),
+                ]),
+        ];
+    }
+
+    public static function getGovernmentIDs(): array
+    {
+        return [
+            Forms\Components\Section::make('Government IDs')
+                ->description('Social Security and Tax identification numbers')
+                ->schema([
+                    Forms\Components\Grid::make(2)
+                        ->schema([
+                            Forms\Components\TextInput::make('sss_gsis')
+                                ->label('SSS/GSIS Number')
+                                ->placeholder('12-3456789-0')
+                                ->maxLength(15)
+                                ->rule('regex:/^\d{2}-\d{7}-\d{1}$/')
+                                ->mask('99-9999999-9')
+                                ->helperText('Format: XX-XXXXXXX-X'),
+
+                            Forms\Components\TextInput::make('tin')
+                                ->label('TIN Number')
+                                ->placeholder('123-456-789-000')
+                                ->maxLength(15)
+                                ->rule('regex:/^\d{3}-\d{3}-\d{3}-\d{3}$/')
+                                ->mask('999-999-999-999')
+                                ->helperText('Format: XXX-XXX-XXX-XXX'),
+                        ]),
+                ]),
+        ];
     }
 
     public static function getAdditionalInformation(): array
     {
-        return
-            [
-                Forms\Components\Section::make('Additional Information')
-                    ->description('Status and additional notes')
-                    ->schema([
-                        Forms\Components\RichEditor::make('remark')
-                            ->label('Remarks')
-                            ->placeholder('Enter any additional notes or remarks about this client')
-                            ->toolbarButtons([
-                                'bold',
-                                'italic',
-                                'underline',
-                                'bulletList',
-                                'orderedList',
-                            ])
-                            ->columnSpanFull(),
-                    ]),
-            ];
+        return [
+            Forms\Components\Section::make('Additional Information')
+                ->description('Status and additional notes')
+                ->schema([
+                    Forms\Components\RichEditor::make('remark')
+                        ->label('Remarks')
+                        ->placeholder('Enter any additional notes or remarks about this client')
+                        ->toolbarButtons([
+                            'bold',
+                            'italic',
+                            'underline',
+                            'bulletList',
+                            'orderedList',
+                        ])
+                        ->maxLength(2000)
+                        ->columnSpanFull(),
+                ]),
+        ];
+    }
+
+    public static function tableQuery(): Builder
+    {
+        // Optimized base query with selective fields and indexed columns
+        return parent::tableQuery()
+            ->select([
+                'members.id',
+                'members.cid',
+                'members.first_name',
+                'members.middle_name',
+                'members.last_name',
+                'members.email',
+                'members.status',
+                'members.birth_date',
+                'members.gender',
+                'members.marital_status',
+                'members.occupation',
+                'members.employment_status',
+                'members.branch_number',
+                'members.contact_number',
+                'members.city',
+                'members.province',
+                'members.barangay',
+                'members.created_at',
+                'members.is_active',
+            ])
+            ->with([
+                'branch:id,branch_number,branch_name'
+            ]);
     }
 
     public static function table(Table $table): Table
     {
         return $table
             ->columns([
-                // Avatar and Basic Info
                 Tables\Columns\TextColumn::make('cid')
                     ->label('CID')
                     ->badge()
-                    ->color('gray'),
+                    ->color('gray')
+                    ->searchable()
+                    ->sortable(),
 
                 Tables\Columns\TextColumn::make('full_name')
                     ->label('Member Name')
                     ->searchable(['first_name', 'last_name', 'middle_name'])
-                    ->sortable(['first_name', 'last_name']),
+                    ->sortable(['first_name', 'last_name'])
+                    ->limit(30),
 
                 Tables\Columns\TextColumn::make('status')
                     ->label('Status')
                     ->badge()
-                    ->tooltip('Member application status')
                     ->color(fn (string $state): string => match ($state) {
                         'accepted' => 'success',
                         'pending' => 'warning',
                         'declined' => 'danger',
                         default => 'gray',
                     })
-                    ->formatStateUsing(fn (string $state) => ucfirst($state)),
+                    ->formatStateUsing(fn (string $state) => ucfirst($state))
+                    ->toggleable(isToggledHiddenByDefault: true)
+                    ->sortable(),
 
-                // Subscription Expiration Date
                 Tables\Columns\TextColumn::make('subscriptions.expires_at')
                     ->label('Expiration Date')
                     ->date('M j, Y')
@@ -451,18 +491,13 @@ class MemberResource extends Resource
                         return $expiresAt->lt(now())
                             ? 'Expired'
                             : ($expiresAt->lt(now()->addDays(30)) ? 'Expires soon' : 'Active');
-                    })
-                    ->sortable()
-                    ->searchable(),
+                    }),
 
-
-                // Personal Details
                 Tables\Columns\TextColumn::make('age')
                     ->label('Age')
-                    ->suffix(' years old')
+                    ->suffix(' years')
                     ->color('gray'),
 
-                // Branch Information
                 Tables\Columns\TextColumn::make('branch.branch_name')
                     ->label('Branch')
                     ->sortable()
@@ -471,29 +506,16 @@ class MemberResource extends Resource
                     ->color('primary')
                     ->icon('heroicon-m-building-office-2'),
 
-                Tables\Columns\TextColumn::make('gender_label')
+                Tables\Columns\TextColumn::make('gender')
                     ->label('Gender')
                     ->badge()
                     ->toggleable(isToggledHiddenByDefault: true)
-                    ->color(fn (string $state): string => match ($state) {
-                        'Male' => 'blue',
-                        'Female' => 'pink',
+                    ->color(fn (string $state): string => match (strtolower($state)) {
+                        'male' => 'blue',
+                        'female' => 'pink',
                         default => 'gray',
                     }),
 
-                Tables\Columns\TextColumn::make('marital_status_label')
-                    ->label('Marital Status')
-                    ->badge()
-                    ->toggleable(isToggledHiddenByDefault: true)
-                    ->color(fn (string $state): string => match ($state) {
-                        'Single' => 'green',
-                        'Married' => 'yellow',
-                        'Divorced' => 'red',
-                        'Widowed' => 'purple',
-                        default => 'gray',
-                    }),
-
-                // Contact Information
                 Tables\Columns\TextColumn::make('email')
                     ->label('Email')
                     ->searchable()
@@ -510,7 +532,6 @@ class MemberResource extends Resource
                     )
                     ->limit(25),
 
-                // Address Summary
                 Tables\Columns\TextColumn::make('full_address')
                     ->label('Address')
                     ->searchable(['city', 'province', 'barangay'])
@@ -520,7 +541,6 @@ class MemberResource extends Resource
                     ->toggleable(isToggledHiddenByDefault: true)
                     ->color('gray'),
 
-                // Employment Information
                 Tables\Columns\TextColumn::make('occupation')
                     ->label('Occupation')
                     ->searchable()
@@ -528,6 +548,7 @@ class MemberResource extends Resource
                     ->color('indigo')
                     ->toggleable(isToggledHiddenByDefault: true)
                     ->placeholder('Not specified'),
+
 
                 Tables\Columns\TextColumn::make('employment_status')
                     ->label('Employment')
@@ -546,14 +567,12 @@ class MemberResource extends Resource
                     ),
 
                 Tables\Columns\TextColumn::make('created_at')
-                    ->label('Date Created')
+                    ->label('Joined')
                     ->date('M j, Y')
                     ->sortable()
-                    ->toggleable(isToggledHiddenByDefault: true)
-                    ->color('gray'),
+                    ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
-                // Status Filter
                 Tables\Filters\SelectFilter::make('is_active')
                     ->label('Status')
                     ->options([
@@ -562,121 +581,81 @@ class MemberResource extends Resource
                     ])
                     ->placeholder('All Statuses'),
 
-                // Branch Filter
+                Tables\Filters\SelectFilter::make('status')
+                    ->label('Application Status')
+                    ->options([
+                        'pending' => 'Pending',
+                        'accepted' => 'Accepted',
+                        'declined' => 'Declined',
+                    ])
+                    ->placeholder('All Applications'),
+
                 Tables\Filters\SelectFilter::make('branch_number')
                     ->label('Branch')
-                    ->options(
-                        Branch::query()->pluck('branch_name', 'branch_number')
-                    )
+                    ->options(fn () => Cache::remember('branch_filter_options', 3600,
+                        fn () => Branch::pluck('branch_name', 'branch_number')
+                    ))
                     ->searchable()
                     ->preload()
                     ->placeholder('All Branches'),
 
-                // Gender Filter
                 Tables\Filters\SelectFilter::make('gender')
                     ->label('Gender')
                     ->options([
-                        'male' => 'Male',
-                        'female' => 'Female',
-                        'other' => 'Other',
+                        'Male' => 'Male',
+                        'Female' => 'Female',
+                        'Other' => 'Other',
                     ])
                     ->placeholder('All Genders'),
 
-                // Employment Status Filter
-                Tables\Filters\SelectFilter::make('employment_status')
-                    ->label('Employment Status')
-                    ->options([
-                        'employed' => 'Employed',
-                        'self_employed' => 'Self-Employed',
-                        'unemployed' => 'Unemployed',
-                        'student' => 'Student',
-                        'retired' => 'Retired',
-                    ])
-                    ->placeholder('All Employment Status'),
-
-                // Age Range Filter
-                Tables\Filters\Filter::make('age_range')
+                Tables\Filters\Filter::make('subscription_status')
+                    ->label('Subscription Status')
                     ->form([
-                        Forms\Components\Grid::make(2)
-                            ->schema([
-                                Forms\Components\TextInput::make('age_from')
-                                    ->label('Age From')
-                                    ->numeric()
-                                    ->placeholder('18'),
-                                Forms\Components\TextInput::make('age_to')
-                                    ->label('Age To')
-                                    ->numeric()
-                                    ->placeholder('65'),
-                            ]),
+                        Forms\Components\Select::make('subscription_filter')
+                            ->label('Filter by')
+                            ->options([
+                                'active' => 'Active Subscriptions',
+                                'expired' => 'Expired Subscriptions',
+                                'expiring_soon' => 'Expiring Soon',
+                                'no_subscription' => 'No Subscription',
+                            ])
+                            ->placeholder('All Subscription Statuses')
                     ])
                     ->query(function (Builder $query, array $data): Builder {
-                        return $query
-                            ->when(
-                                $data['age_from'],
-                                fn (Builder $query, $age): Builder => $query->whereRaw('TIMESTAMPDIFF(YEAR, birth_date, CURDATE()) >= ?', [$age]),
-                            )
-                            ->when(
-                                $data['age_to'],
-                                fn (Builder $query, $age): Builder => $query->whereRaw('TIMESTAMPDIFF(YEAR, birth_date, CURDATE()) <= ?', [$age]),
-                            );
-                    })
-                    ->indicateUsing(function (array $data): array {
-                        $indicators = [];
-
-                        if ($data['age_from'] ?? null) {
-                            $indicators[] = Tables\Filters\Indicator::make('Age from ' . $data['age_from'])
-                                ->removeField('age_from');
+                        if (!isset($data['subscription_filter'])) {
+                            return $query;
                         }
 
-                        if ($data['age_to'] ?? null) {
-                            $indicators[] = Tables\Filters\Indicator::make('Age to ' . $data['age_to'])
-                                ->removeField('age_to');
-                        }
-
-                        return $indicators;
+                        return match ($data['subscription_filter']) {
+                            'active' => $query->whereRaw('(SELECT expires_at FROM subscriptions WHERE member_id = members.id ORDER BY expires_at DESC LIMIT 1) > NOW()'),
+                            'expired' => $query->whereRaw('(SELECT expires_at FROM subscriptions WHERE member_id = members.id ORDER BY expires_at DESC LIMIT 1) < NOW()'),
+                            'expiring_soon' => $query->whereRaw('(SELECT expires_at FROM subscriptions WHERE member_id = members.id ORDER BY expires_at DESC LIMIT 1) BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 30 DAY)'),
+                            'no_subscription' => $query->whereDoesntHave('subscriptions'),
+                            default => $query
+                        };
                     }),
 
-                // Date Range Filter
                 Tables\Filters\Filter::make('created_at')
                     ->form([
                         Forms\Components\DatePicker::make('created_from')
-                            ->label('Joined From')
-                            ->placeholder('Select start date'),
+                            ->label('Joined From'),
                         Forms\Components\DatePicker::make('created_until')
-                            ->label('Joined Until')
-                            ->placeholder('Select end date'),
+                            ->label('Joined Until'),
                     ])
                     ->query(function (Builder $query, array $data): Builder {
                         return $query
-                            ->when(
-                                $data['created_from'],
-                                fn (Builder $query, $date): Builder => $query->whereDate('created_at', '>=', $date),
+                            ->when($data['created_from'],
+                                fn (Builder $query, $date) => $query->whereDate('created_at', '>=', $date)
                             )
-                            ->when(
-                                $data['created_until'],
-                                fn (Builder $query, $date): Builder => $query->whereDate('created_at', '<=', $date),
+                            ->when($data['created_until'],
+                                fn (Builder $query, $date) => $query->whereDate('created_at', '<=', $date)
                             );
-                    })
-                    ->indicateUsing(function (array $data): array {
-                        $indicators = [];
-
-                        if ($data['created_from'] ?? null) {
-                            $indicators[] = Tables\Filters\Indicator::make('Joined from ' . Carbon::parse($data['created_from'])->toFormattedDateString())
-                                ->removeField('created_from');
-                        }
-
-                        if ($data['created_until'] ?? null) {
-                            $indicators[] = Tables\Filters\Indicator::make('Joined until ' . Carbon::parse($data['created_until'])->toFormattedDateString())
-                                ->removeField('created_until');
-                        }
-
-                        return $indicators;
                     }),
             ])
             ->actions([
                 Tables\Actions\ActionGroup::make([
                     Tables\Actions\ViewAction::make()
-                        ->label('View Profile')
+                        ->label('View')
                         ->icon('heroicon-m-eye')
                         ->color('info'),
 
@@ -685,58 +664,44 @@ class MemberResource extends Resource
                         ->icon(fn (Model $record): string => $record->is_active ? 'heroicon-o-x-circle' : 'heroicon-o-check-circle')
                         ->color(fn (Model $record): string => $record->is_active ? 'danger' : 'success')
                         ->requiresConfirmation()
-                        ->modalHeading(fn (Model $record): string => $record->is_active ? 'Deactivate Member' : 'Activate Member')
-                        ->modalDescription(fn (Model $record): string => $record->is_active
-                            ? 'Are you sure you want to deactivate this member? They will no longer have access to services.'
-                            : 'Are you sure you want to activate this member? They will regain access to services.'
-                        )
-                        ->action(fn (Model $record) => $record->update(['is_active' => !$record->is_active]))
-                        ->successNotification(
-                            Notification::make()
-                                ->success()
-                                ->title('Status Updated')
-                                ->body('Member status has been updated successfully.')
-                        ),
+                        ->action(function (Model $record) {
+                            try {
+                                $record->update(['is_active' => !$record->is_active]);
+                                Notification::make()
+                                    ->success()
+                                    ->title('Status Updated')
+                                    ->send();
+                            } catch (\Exception $e) {
+                                Notification::make()
+                                    ->danger()
+                                    ->title('Error updating status')
+                                    ->body('Please try again.')
+                                    ->send();
+                            }
+                        }),
 
-                    // Accept button
                     Tables\Actions\Action::make('accept')
                         ->label('Accept')
                         ->icon('heroicon-o-check-circle')
                         ->color('success')
                         ->requiresConfirmation()
-                        ->modalHeading('Accept Member')
-                        ->modalDescription('Are you sure you want to accept this member?')
                         ->visible(fn (Model $record) =>
-                            $record->is_active &&
-                            in_array($record->status, ['pending', 'declined'])
+                            $record->is_active && in_array($record->status, ['pending', 'declined'])
                         )
-                        ->action(fn (Model $record) => $record->update(['status' => 'accepted']))
-                        ->successNotification(
-                            Notification::make()
-                                ->success()
-                                ->title('Member Accepted')
-                                ->body('The member has been accepted successfully.')
-                        ),
-
-                    // Decline button
-                    Tables\Actions\Action::make('decline')
-                        ->label('Decline')
-                        ->icon('heroicon-o-x-circle')
-                        ->color('danger')
-                        ->requiresConfirmation()
-                        ->modalHeading('Decline Member')
-                        ->modalDescription('Are you sure you want to decline this member?')
-                        ->visible(fn (Model $record) =>
-                            $record->is_active &&
-                            $record->status === 'pending'
-                        )
-                        ->action(fn (Model $record) => $record->update(['status' => 'declined']))
-                        ->successNotification(
-                            Notification::make()
-                                ->success()
-                                ->title('Member Declined')
-                                ->body('The member has been declined successfully.')
-                        ),
+                        ->action(function (Model $record) {
+                            try {
+                                $record->update(['status' => 'accepted']);
+                                Notification::make()
+                                    ->success()
+                                    ->title('Member Accepted')
+                                    ->send();
+                            } catch (\Exception $e) {
+                                Notification::make()
+                                    ->danger()
+                                    ->title('Error accepting member')
+                                    ->send();
+                            }
+                        }),
                 ])
                     ->label('Actions')
                     ->icon('heroicon-m-ellipsis-vertical')
@@ -842,16 +807,17 @@ class MemberResource extends Resource
                             return response()->streamDownload(function () use ($records) {
                                 $csv = Writer::createFromString('');
                                 $csv->insertOne([
-                                    'ID', 'Name', 'Branch', 'Email', 'Phone', 'Address',
+                                    'ID', 'CID', 'Name', 'Branch', 'Email', 'Phone', 'Address',
                                     'Age', 'Gender', 'Marital Status', 'Occupation',
-                                    'Employment Status', 'Status', 'Joined Date'
+                                    'Employment Status', 'Status', 'Joined Date', 'Account Name', 'Account Number', 'Amount', 'Payment Date', 'Subscription Date', 'Remarks'
                                 ]);
 
                                 foreach ($records as $record) {
                                     $csv->insertOne([
+                                        $record->id,
                                         $record->cid,
                                         $record->full_name,
-                                        $record->branch->name ?? 'N/A',
+                                        $record->branch->branch_name ?? 'N/A',
                                         $record->email,
                                         $record->contact_number,
                                         $record->full_address,
@@ -860,7 +826,7 @@ class MemberResource extends Resource
                                         $record->marital_status_label,
                                         $record->occupation,
                                         $record->employment_status,
-                                        $record->is_active ? 'Active' : 'Inactive',
+                                        $record->is_active ? 'Active' : 'Archived',
                                         $record->created_at->format('Y-m-d'),
                                     ]);
                                 }
@@ -868,30 +834,74 @@ class MemberResource extends Resource
                                 echo $csv->toString();
                             }, 'members-export-' . now()->format('Y-m-d-H-i-s') . '.csv');
                         }),
+                    Tables\Actions\BulkAction::make('mergeMembers')
+                        ->label('Merge Members')
+                        ->icon('heroicon-o-user-group')
+                        ->requiresConfirmation()
+                        ->action(function (Collection $records): void {
+                            if ($records->count() < 2) {
+                                Notification::make()
+                                    ->title('Please select at least two members to merge.')
+                                    ->warning()
+                                    ->send();
+                                return;
+                            }
+
+                            $primary = $records->first();
+                            $duplicates = $records->where('id', '!=', $primary->id);
+
+                            $primary->loadMissing('subscriptions', 'productAccounts');
+
+                            foreach ($duplicates as $duplicate) {
+                                $duplicate->loadMissing('subscriptions', 'productAccounts');
+
+                                foreach ($duplicate->subscriptions as $subscription) {
+                                    $subscription->member_id = $primary->id;
+                                    $subscription->save();
+                                }
+
+                                foreach ($duplicate->productAccounts as $account) {
+                                    $account->member_id = $primary->id;
+                                    $account->save();
+                                }
+
+                                $duplicate->is_active = false;
+                                $duplicate->remark = 'Merged into: ' . $primary->full_name;
+                                $duplicate->save();
+                            }
+
+                            $primary->save();
+
+                            Notification::make()
+                                ->title('Members merged successfully.')
+                                ->success()
+                                ->send();
+                        }),
+
+
                 ]),
             ])
             ->emptyStateHeading('No members found')
-            ->emptyStateDescription('Get started by adding your first member to the system.')
+            ->emptyStateDescription('Get started by adding your first member.')
             ->emptyStateIcon('heroicon-o-users')
             ->striped()
             ->defaultSort('created_at', 'desc')
             ->persistSortInSession()
             ->persistFiltersInSession()
             ->persistSearchInSession()
-            ->filtersFormColumns(3)
-            ->paginated([10, 25, 50, 100])
-            ->defaultPaginationPageOption(25)
-            ->poll('60s') // Auto-refresh every 60 seconds
+            ->filtersFormColumns(2)
+            ->paginated([10,25, 50, 100])
+            ->defaultPaginationPageOption(10)
             ->deferLoading()
             ->searchOnBlur()
-            ->searchDebounce('500ms');
+            ->searchDebounce('750ms')
+            // Disable polling for large datasets
+            ->poll(null);
     }
 
     public static function getRelations(): array
     {
-        return [
-            //
-        ];
+        return [];
     }
 
     public static function getPages(): array

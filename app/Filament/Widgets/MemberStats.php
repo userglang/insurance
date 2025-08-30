@@ -9,153 +9,122 @@ use Filament\Widgets\StatsOverviewWidget\Stat;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
 
 class MemberStats extends BaseWidget
 {
+    protected static ?int $sort = 1;
     protected static ?string $pollingInterval = '30s';
     protected static bool $isLazy = false;
 
+    /**
+     * Check if the current user can view this widget
+     */
+    public static function canView(): bool
+    {
+        return true;
+    }
+
     protected function getStats(): array
     {
-        // Cache the expensive queries for 5 minutes
-        $cacheKey = 'member_stats_' . now()->format('Y-m-d-H-i');
-        $cacheDuration = now()->addMinutes(5);
+        // Enhanced cache key for performance
+        $cacheKey = sprintf(
+            'member_stats_v3_%s_%s_%d',
+            now()->format('Y-m-d-H'),
+            floor(now()->minute / 15),
+            config('app.cache_version', 1)
+        );
+
+        $cacheDuration = now()->addMinutes(15);
 
         $stats = Cache::remember($cacheKey, $cacheDuration, function () {
-            return $this->calculateStats();
+            return $this->calculateStatsOptimized();
         });
 
         return $this->buildStatCards($stats);
     }
 
-    private function calculateStats(): array
-    {
-        // Single query to get all counts efficiently
-        $statusCounts = Member::select('status', DB::raw('count(*) as count'))
-            ->groupBy('status')
-            ->pluck('count', 'status')
-            ->toArray();
-
-        // Get time-based statistics
-        $timeStats = $this->getTimeBasedStats();
-
-        // Get subscription-related statistics
-        $subscriptionStats = $this->getSubscriptionStats();
-
-        // Calculate totals
-        $total = array_sum($statusCounts);
-        $accepted = $statusCounts['accepted'] ?? 0;
-        $active = Member::where('status', 'accepted')->where('is_active', true)->count();
-        $pending = $statusCounts['pending'] ?? 0;
-        $declined = $statusCounts['declined'] ?? 0;
-        $archived = Member::where('is_active', false)->count();
-        $inactive = $total - $active;
-
-        return array_merge([
-            'total' => $total,
-            'accepted' => $accepted,
-            'active' => $active,
-            'pending' => $pending,
-            'declined' => $declined,
-            'archived' => $archived,
-            'inactive' => $inactive,
-        ], $timeStats, $subscriptionStats);
-    }
-
-    private function getTimeBasedStats(): array
+    private function calculateStatsOptimized(): array
     {
         $now = Carbon::now();
 
-        return [
-            'new_this_month' => Member::whereMonth('created_at', $now->month)
-                ->whereYear('created_at', $now->year)
-                ->where('is_active', true) // Filter out archived members
-                ->count(),
-            'new_last_month' => Member::whereMonth('created_at', $now->subMonth()->month)
-                ->whereYear('created_at', $now->year)
-                ->where('is_active', true) // Filter out archived members
-                ->count(),
-            'new_this_week' => Member::whereBetween('created_at', [
-                $now->startOfWeek()->toDateString(),
-                $now->endOfWeek()->toDateString()
-            ])
-                ->where('is_active', true) // Filter out archived members
-                ->count(),
-            'new_today' => Member::whereDate('created_at', $now->toDateString())
-                ->where('is_active', true) // Filter out archived members
-                ->count(),
-        ];
+        try {
+            // Get statistics with proper error handling
+            $memberStats = $this->getMemberStatsInOneQuery($now);
+            $subscriptionStats = $this->getSubscriptionStatsInOneQuery($now);
+
+            return array_merge($memberStats, $subscriptionStats);
+        } catch (\Exception $e) {
+            // Log error and return safe defaults
+            Log::error('MemberStats calculation failed: ' . $e->getMessage());
+            return $this->getDefaultStats();
+        }
     }
 
-    private function getSubscriptionStats(): array
+    private function getMemberStatsInOneQuery(Carbon $now): array
     {
-        $now = Carbon::now();
-        $soonThreshold = $now->copy()->addDays(30); // 30 days from now
+        // Use Eloquent with proper bindings for security
+        $result = Member::selectRaw("
+            COUNT(*) as total,
+            COUNT(CASE WHEN status = 'accepted' THEN 1 END) as accepted,
+            COUNT(CASE WHEN status = 'accepted' AND is_active = 1 THEN 1 END) as active,
+            COUNT(CASE WHEN status = 'pending' AND is_active = 1 THEN 1 END) as pending_active,
+            COUNT(CASE WHEN status = 'declined' AND is_active = 1 THEN 1 END) as declined_active,
+            COUNT(CASE WHEN is_active = 0 THEN 1 END) as archived,
+            COUNT(CASE WHEN DATE(created_at) = ? AND is_active = 1 THEN 1 END) as new_today
+        ")
+        ->addBinding($now->toDateString(), 'select')
+        ->first();
 
-        return [
-            'expires_soon' => Member::where('is_active', true) // Filter out archived members
-            ->whereHas('latestSubscription', function ($query) use ($now, $soonThreshold) {
-                $query->where('expires_at', '>', $now)
-                    ->where('expires_at', '<=', $soonThreshold);
-            })->count(),
+        if (!$result) {
+            return $this->getDefaultMemberStats();
+        }
 
-            'expired' => Member::where('is_active', true) // Filter out archived members
-            ->whereHas('latestSubscription', function ($query) use ($now) {
-                $query->where('expires_at', '<', $now);
-            })->count(),
+        // Convert to array and calculate derived values safely
+        $stats = $result->toArray();
+        $stats['inactive'] = max(0, ($stats['total'] ?? 0) - ($stats['active'] ?? 0));
 
-            'recommended' => Member::where('status', 'accepted')
-                ->where('is_active', true) // Already filtered, but keeping for clarity
-                ->whereHas('subscriptions', function ($query) use ($now) {
-                    $query->where('expires_at', '>', $now);
-                })
-                ->whereDoesntHave('subscriptions', function ($query) use ($now) {
-                    // Members who don't have recent renewals (last 6 months)
-                    $query->where('created_at', '>', $now->copy()->subMonths(6))
-                        ->where('expires_at', '>', $now->copy()->addMonths(6));
-                })
-                ->count(),
+        // Validate data integrity
+        return $this->validateMemberStats($stats);
+    }
 
-            'active_subscriptions' => Subscription::select('member_id', 'insurance_id')
-                ->where('expires_at', '>', $now)
-                ->whereHas('member', function ($query) {
-                    $query->where('is_active', true); // Filter out archived members
-                })
-                ->groupBy('member_id', 'insurance_id')
-                ->get()
-                ->count(),
+    private function getSubscriptionStatsInOneQuery(Carbon $now): array
+    {
+        // Get subscription statistics using your approach - latest subscription per member
+        $subscriptionResult = DB::table('members as m')
+            ->where('m.is_active', 1)
+            ->selectRaw("
+                COUNT(CASE WHEN (SELECT expires_at FROM subscriptions WHERE member_id = m.id ORDER BY expires_at DESC LIMIT 1) > NOW() THEN 1 END) as active_subscriptions,
+                COUNT(CASE WHEN (SELECT expires_at FROM subscriptions WHERE member_id = m.id ORDER BY expires_at DESC LIMIT 1) < NOW() THEN 1 END) as expired,
+                COUNT(CASE WHEN (SELECT expires_at FROM subscriptions WHERE member_id = m.id ORDER BY expires_at DESC LIMIT 1) BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 30 DAY) THEN 1 END) as expires_soon
+            ")
+            ->first();
 
-            'subscription_revenue_this_month' => Subscription::whereMonth('created_at', $now->month)
-                    ->whereYear('created_at', $now->year)
-                    ->sum('amount') ?? 0,
-        ];
+        // Get revenue for current month separately
+        $revenueResult = DB::table('subscriptions')
+            ->whereYear('created_at', $now->year)
+            ->whereMonth('created_at', $now->month)
+            ->selectRaw('COALESCE(SUM(amount), 0) as revenue_this_month')
+            ->first();
+
+        if (!$subscriptionResult) {
+            return $this->getDefaultSubscriptionStats();
+        }
+
+        $stats = (array) $subscriptionResult;
+        $stats['revenue_this_month'] = $revenueResult->revenue_this_month ?? 0;
+
+        return $this->validateSubscriptionStats($stats);
     }
 
     private function buildStatCards(array $stats): array
     {
-        $growthPercentage = $this->calculateGrowthPercentage(
-            $stats['new_this_month'],
-            $stats['new_last_month']
-        );
-
-        // Calculate filtered declined members (excluding archived)
-        $declinedActive = Member::where('status', 'declined')
-            ->where('is_active', true)
-            ->count();
-
-        // Calculate filtered pending applications (excluding archived)
-        $pendingActive = Member::where('status', 'pending')
-            ->where('is_active', true)
-            ->count();
+        // Sanitize all numeric values
+        $stats = array_map(function ($value) {
+            return is_numeric($value) ? (int) $value : 0;
+        }, $stats);
 
         return [
-            // Total Members with trend
-//            Stat::make('👥 Total Members', number_format($stats['total']))
-//                ->description('All registered members')
-//                ->descriptionIcon('heroicon-m-users')
-//                ->color('gray')
-//                ->chart($this->getMonthlyTrendChart()),
-
             // Active Members with percentage
             Stat::make('✅ Active Members', number_format($stats['active']))
                 ->description($this->getActivePercentageDescription($stats['active'], $stats['total']))
@@ -163,92 +132,126 @@ class MemberStats extends BaseWidget
                 ->color('success')
                 ->chart([$stats['active'], $stats['inactive']]),
 
-            // Declined Members (filtered)
-            Stat::make('❌ Declined Members', number_format($declinedActive))
-                ->description($this->getDeclinedPercentageDescription($declinedActive, $stats['total']))
+            // Declined Members
+            Stat::make('❌ Declined Members', number_format($stats['declined_active']))
+                ->description($this->getDeclinedPercentageDescription($stats['declined_active'], $stats['total']))
                 ->descriptionIcon('heroicon-m-x-circle')
-                ->color('danger')
-                ->chart($this->getStatusChart($stats)),
+                ->color('danger'),
 
-            // Pending Applications with urgency indicator (filtered)
-            Stat::make('🟡 Pending Applications', number_format($pendingActive))
-                ->description($this->getPendingDescription($pendingActive))
+            // Pending Applications
+            Stat::make('🟡 Pending Applications', number_format($stats['pending_active']))
+                ->description($this->getPendingDescription($stats['pending_active']))
                 ->descriptionIcon('heroicon-m-clock')
-                ->color($pendingActive > 10 ? 'warning' : 'info'),
+                ->color($stats['pending_active'] > 10 ? 'warning' : 'info'),
 
-            // Expires Soon - New (filtered)
+            // Expires Soon
             Stat::make('⏰ Expires Soon', number_format($stats['expires_soon']))
                 ->description($this->getExpiresSoonDescription($stats['expires_soon']))
                 ->descriptionIcon('heroicon-m-exclamation-triangle')
                 ->color($stats['expires_soon'] > 0 ? 'warning' : 'success'),
 
-            // Expired - New (filtered)
+            // Expired
             Stat::make('❌ Expired', number_format($stats['expired']))
                 ->description($this->getExpiredDescription($stats['expired']))
                 ->descriptionIcon('heroicon-m-x-circle')
                 ->color($stats['expired'] > 0 ? 'danger' : 'success'),
 
-            // Recommended for Renewal - New (filtered)
-            Stat::make('💡 Recommended', number_format($stats['recommended']))
-                ->description($this->getRecommendedDescription($stats['recommended']))
-                ->descriptionIcon('heroicon-m-star')
-                ->color($stats['recommended'] > 0 ? 'info' : 'gray'),
-
-            // New This Month with growth indicator (filtered)
-            Stat::make('🆕 New This Month', number_format($stats['new_this_month']))
-                ->description($this->getGrowthDescription($growthPercentage))
-                ->descriptionIcon($growthPercentage >= 0 ? 'heroicon-m-arrow-trending-up' : 'heroicon-m-arrow-trending-down')
-                ->color($growthPercentage >= 0 ? 'success' : 'danger')
-                ->chart($this->getWeeklyNewMembersChart()),
-
-            // Activity Summary
-            Stat::make('📊 Activity Rate', $this->getActivityRate($stats['active'], $stats['total']))
-                ->description('Active vs Total members')
-                ->descriptionIcon('heroicon-m-chart-bar')
-                ->color($this->getActivityRateColor($stats['active'], $stats['total']))
-                ->chart([$stats['active'], $stats['inactive']]),
-
-            // Active Subscriptions - Enhanced (filtered)
+            // Active Subscriptions - Based on latest subscription per member
             Stat::make('🔄 Active Subscriptions', number_format($stats['active_subscriptions']))
-                ->description('Currently valid subscriptions')
+                ->description('Members with valid subscriptions')
                 ->descriptionIcon('heroicon-m-arrow-path')
                 ->color('success')
-                ->chart($this->getSubscriptionTrendChart()),
+                ->chart($this->getSubscriptionTrendChartOptimized()),
 
-            // Revenue This Month - New (filtered)
-            Stat::make('💰 Revenue This Month', '₱' . number_format($stats['subscription_revenue_this_month'], 2))
+            // Revenue This Month - Sanitized currency display
+            Stat::make('💰 Revenue This Month', $this->formatCurrency($stats['revenue_this_month']))
                 ->description('Subscription income this month')
                 ->descriptionIcon('heroicon-m-banknotes')
                 ->color('success'),
 
-            // Weekly Summary (filtered)
-            Stat::make('📅 This Week', number_format($stats['new_this_week']))
-                ->description('New members this week')
-                ->descriptionIcon('heroicon-m-calendar-days')
-                ->color('info'),
-
-            // Status Overview - Enhanced (filtered)
-            Stat::make('⚠️ Needs Attention', number_format($pendingActive + $stats['expired'] + $stats['expires_soon']))
+            // Status Overview
+            Stat::make('⚠️ Needs Attention', number_format(
+                $stats['pending_active'] + $stats['expired'] + $stats['expires_soon']
+            ))
                 ->description('Pending + Expired + Expiring')
                 ->descriptionIcon('heroicon-m-exclamation-triangle')
-                ->color($pendingActive + $stats['expired'] + $stats['expires_soon'] > 5 ? 'warning' : 'gray'),
+                ->color(($stats['pending_active'] + $stats['expired'] + $stats['expires_soon']) > 5 ? 'warning' : 'gray'),
         ];
     }
 
-    private function calculateGrowthPercentage(int $current, int $previous): float
+    // Security and validation helper methods
+    private function validateMemberStats(array $stats): array
     {
-        if ($previous === 0) {
-            return $current > 0 ? 100 : 0;
+        $defaults = $this->getDefaultMemberStats();
+
+        foreach ($defaults as $key => $defaultValue) {
+            if (!isset($stats[$key]) || !is_numeric($stats[$key]) || $stats[$key] < 0) {
+                $stats[$key] = $defaultValue;
+            }
         }
 
-        return round((($current - $previous) / $previous) * 100, 1);
+        return $stats;
     }
 
+    private function validateSubscriptionStats(array $stats): array
+    {
+        $defaults = $this->getDefaultSubscriptionStats();
+
+        foreach ($defaults as $key => $defaultValue) {
+            if (!isset($stats[$key]) || !is_numeric($stats[$key]) || $stats[$key] < 0) {
+                $stats[$key] = $defaultValue;
+            }
+        }
+
+        return $stats;
+    }
+
+    private function getDefaultStats(): array
+    {
+        return array_merge($this->getDefaultMemberStats(), $this->getDefaultSubscriptionStats());
+    }
+
+    private function getDefaultMemberStats(): array
+    {
+        return [
+            'total' => 0,
+            'accepted' => 0,
+            'active' => 0,
+            'pending_active' => 0,
+            'declined_active' => 0,
+            'archived' => 0,
+            'new_today' => 0,
+            'inactive' => 0,
+        ];
+    }
+
+    private function getDefaultSubscriptionStats(): array
+    {
+        return [
+            'expires_soon' => 0,
+            'expired' => 0,
+            'active_subscriptions' => 0,
+            'revenue_this_month' => 0,
+        ];
+    }
+
+    // Safe currency formatting
+    private function formatCurrency(float $amount): string
+    {
+        // Sanitize amount and prevent display of extremely large numbers
+        $sanitizedAmount = max(0, min($amount, 999999999.99));
+        return '₱' . number_format($sanitizedAmount, 2);
+    }
+
+    // Description methods with input validation
     private function getDeclinedPercentageDescription(int $declined, int $total): string
     {
         if ($total === 0) return 'No members yet';
 
+        $declined = max(0, $declined);
+        $total = max(1, $total);
         $percentage = round(($declined / $total) * 100, 1);
+
         return "{$percentage}% of all members";
     }
 
@@ -256,164 +259,113 @@ class MemberStats extends BaseWidget
     {
         if ($total === 0) return 'No members yet';
 
+        $active = max(0, $active);
+        $total = max(1, $total);
         $percentage = round(($active / $total) * 100, 1);
+
         return "{$percentage}% are active (accepted + not archived)";
     }
 
     private function getPendingDescription(int $pending): string
     {
-        if ($pending === 0) return 'No pending applications';
-        if ($pending === 1) return '1 application awaiting review';
-        if ($pending <= 5) return 'Low priority queue';
-        if ($pending <= 10) return 'Moderate queue';
+        $pending = max(0, $pending);
 
-        return 'High priority - needs attention!';
+        return match (true) {
+            $pending === 0 => 'No pending applications',
+            $pending === 1 => '1 application awaiting review',
+            $pending <= 5 => 'Low priority queue',
+            $pending <= 10 => 'Moderate queue',
+            default => 'High priority - needs attention!'
+        };
     }
 
     private function getExpiresSoonDescription(int $expiresSoon): string
     {
-        if ($expiresSoon === 0) return 'No subscriptions expiring soon';
-        if ($expiresSoon === 1) return '1 subscription expires within 30 days';
-        if ($expiresSoon <= 5) return 'Few subscriptions expiring soon';
-        if ($expiresSoon <= 10) return 'Several subscriptions need renewal';
+        $expiresSoon = max(0, $expiresSoon);
 
-        return 'Many subscriptions expiring - take action!';
+        return match (true) {
+            $expiresSoon === 0 => 'No subscriptions expiring soon',
+            $expiresSoon === 1 => '1 subscription expires within 30 days',
+            $expiresSoon <= 5 => 'Few subscriptions expiring soon',
+            $expiresSoon <= 10 => 'Several subscriptions need renewal',
+            default => 'Many subscriptions expiring - take action!'
+        };
     }
 
     private function getExpiredDescription(int $expired): string
     {
-        if ($expired === 0) return 'No expired subscriptions';
-        if ($expired === 1) return '1 expired subscription';
-        if ($expired <= 5) return 'Few expired subscriptions';
-        if ($expired <= 10) return 'Several expired subscriptions';
-
-        return 'Many expired subscriptions!';
-    }
-
-    private function getRecommendedDescription(int $recommended): string
-    {
-        if ($recommended === 0) return 'No renewal recommendations';
-        if ($recommended === 1) return '1 member recommended for renewal';
-        if ($recommended <= 5) return 'Few members ready for renewal';
-        if ($recommended <= 10) return 'Several members ready for renewal';
-
-        return 'Many members ready for renewal!';
-    }
-
-    private function getGrowthDescription(float $percentage): string
-    {
-        if ($percentage > 0) {
-            return "+{$percentage}% vs last month";
-        } elseif ($percentage < 0) {
-            return "{$percentage}% vs last month";
-        }
-
-        return 'No change from last month';
-    }
-
-    private function getActivityRate(int $active, int $total): string
-    {
-        if ($total === 0) return '0%';
-
-        $rate = round(($active / $total) * 100, 1);
-        return "{$rate}%";
-    }
-
-    private function getActivityRateColor(int $active, int $total): string
-    {
-        if ($total === 0) return 'gray';
-
-        $rate = ($active / $total) * 100;
+        $expired = max(0, $expired);
 
         return match (true) {
-            $rate >= 80 => 'success',
-            $rate >= 60 => 'info',
-            $rate >= 40 => 'warning',
-            default => 'danger',
+            $expired === 0 => 'No expired subscriptions',
+            $expired === 1 => '1 expired subscription',
+            $expired <= 5 => 'Few expired subscriptions',
+            $expired <= 10 => 'Several expired subscriptions',
+            default => 'Many expired subscriptions!'
         };
     }
 
-    private function getStatusChart(array $stats): array
+    private function getSubscriptionTrendChartOptimized(): array
     {
-        return [
-            $stats['accepted'],
-            $stats['pending'],
-            $stats['declined'],
-            $stats['archived'],
-        ];
-    }
+        $cacheKey = 'subscription_trend_v3';
 
-    private function getMonthlyTrendChart(): array
-    {
-        // Get last 6 months of member registrations (filtered)
-        return Cache::remember('member_monthly_trend', now()->addHours(6), function () {
-            $months = collect();
+        return Cache::remember($cacheKey, now()->addHours(4), function () {
+            try {
+                // Get subscription trend based on creation dates (new subscriptions per month)
+                $result = DB::table('subscriptions')
+                    ->where('created_at', '>=', now()->subMonths(6))
+                    ->selectRaw("
+                        COUNT(CASE WHEN YEAR(created_at) = ? AND MONTH(created_at) = ? THEN 1 END) as month_5,
+                        COUNT(CASE WHEN YEAR(created_at) = ? AND MONTH(created_at) = ? THEN 1 END) as month_4,
+                        COUNT(CASE WHEN YEAR(created_at) = ? AND MONTH(created_at) = ? THEN 1 END) as month_3,
+                        COUNT(CASE WHEN YEAR(created_at) = ? AND MONTH(created_at) = ? THEN 1 END) as month_2,
+                        COUNT(CASE WHEN YEAR(created_at) = ? AND MONTH(created_at) = ? THEN 1 END) as month_1,
+                        COUNT(CASE WHEN YEAR(created_at) = ? AND MONTH(created_at) = ? THEN 1 END) as current_month
+                    ")
+                    ->addBinding(now()->subMonths(5)->year, 'select')
+                    ->addBinding(now()->subMonths(5)->month, 'select')
+                    ->addBinding(now()->subMonths(4)->year, 'select')
+                    ->addBinding(now()->subMonths(4)->month, 'select')
+                    ->addBinding(now()->subMonths(3)->year, 'select')
+                    ->addBinding(now()->subMonths(3)->month, 'select')
+                    ->addBinding(now()->subMonths(2)->year, 'select')
+                    ->addBinding(now()->subMonths(2)->month, 'select')
+                    ->addBinding(now()->subMonths(1)->year, 'select')
+                    ->addBinding(now()->subMonths(1)->month, 'select')
+                    ->addBinding(now()->year, 'select')
+                    ->addBinding(now()->month, 'select')
+                    ->first();
 
-            for ($i = 5; $i >= 0; $i--) {
-                $date = Carbon::now()->subMonths($i);
-                $count = Member::whereMonth('created_at', $date->month)
-                    ->whereYear('created_at', $date->year)
-                    ->where('is_active', true) // Filter out archived members
-                    ->count();
-                $months->push($count);
+                if (!$result) {
+                    return [0, 0, 0, 0, 0, 0];
+                }
+
+                return [
+                    max(0, $result->month_5 ?? 0),
+                    max(0, $result->month_4 ?? 0),
+                    max(0, $result->month_3 ?? 0),
+                    max(0, $result->month_2 ?? 0),
+                    max(0, $result->month_1 ?? 0),
+                    max(0, $result->current_month ?? 0),
+                ];
+            } catch (\Exception $e) {
+                Log::error('Subscription trend chart failed: ' . $e->getMessage());
+                return [0, 0, 0, 0, 0, 0];
             }
-
-            return $months->toArray();
-        });
-    }
-
-    private function getWeeklyNewMembersChart(): array
-    {
-        // Get last 4 weeks of new members (filtered)
-        return Cache::remember('member_weekly_trend', now()->addHours(2), function () {
-            $weeks = collect();
-
-            for ($i = 3; $i >= 0; $i--) {
-                $startOfWeek = Carbon::now()->subWeeks($i)->startOfWeek();
-                $endOfWeek = Carbon::now()->subWeeks($i)->endOfWeek();
-
-                $count = Member::whereBetween('created_at', [
-                    $startOfWeek->toDateString(),
-                    $endOfWeek->toDateString()
-                ])
-                    ->where('is_active', true) // Filter out archived members
-                    ->count();
-
-                $weeks->push($count);
-            }
-
-            return $weeks->toArray();
-        });
-    }
-
-    private function getSubscriptionTrendChart(): array
-    {
-        // Get subscription trend for last 6 months (filtered)
-        return Cache::remember('subscription_trend', now()->addHours(4), function () {
-            $months = collect();
-
-            for ($i = 5; $i >= 0; $i--) {
-                $date = Carbon::now()->subMonths($i);
-                $count = Subscription::whereMonth('created_at', $date->month)
-                    ->whereYear('created_at', $date->year)
-                    ->whereHas('member', function ($query) {
-                        $query->where('is_active', true); // Filter out archived members
-                    })
-                    ->count();
-                $months->push($count);
-            }
-
-            return $months->toArray();
         });
     }
 
     protected function getColumns(): int
     {
-        return 4; // Display 4 cards per row on larger screens
+        return 4;
     }
 
-//    public static function canView(): bool
-//    {
-//        return auth()->user()?->can('view_member_stats') ?? true;
-//    }
+    /**
+     * Clear cache for this widget (useful for testing or manual refresh)
+     */
+    public function clearCache(): void
+    {
+        $pattern = "member_stats_v3_*";
+        Cache::forget($pattern);
+    }
 }

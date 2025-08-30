@@ -6,6 +6,7 @@ use App\Filament\Resources\ProductAccountResource;
 use App\Filament\Resources\SubscriptionResource;
 use App\Models\ProductAccount;
 use App\Models\Subscription;
+use App\Services\SubscriptionPdfService;
 use Filament\Forms\Form;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Support\Enums\FontWeight;
@@ -16,6 +17,7 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Response;
 
 class SubscriptionsRelationManager extends RelationManager
 {
@@ -33,52 +35,56 @@ class SubscriptionsRelationManager extends RelationManager
     public static function getProductAccountID(): array
     {
         return [
-            Forms\Components\Select::make('product_account_id')
-                ->label('Account')
-                ->options(function ($livewire) {
-                    $memberId = $livewire->getOwnerRecord()->id;
+            Forms\Components\Section::make('Account Details')
+                ->description('Select or create a product account associated with the member.')
+                ->schema([
+                    Forms\Components\Select::make('product_account_id')
+                        ->label('Account')
+                        ->options(function ($livewire) {
+                            $memberId = $livewire->getOwnerRecord()->id;
 
-                    $accounts = ProductAccount::where('member_id', $memberId)
-                        ->selectRaw('
-                            id,
-                            CASE
-                                WHEN UPPER(product_name) = "CASH" THEN "CASH"
-                                ELSE CONCAT(UPPER(product_name), " (", account_number, ")")
-                            END as display_name
-                        ')
-                        ->get();
+                            $accounts = ProductAccount::where('member_id', $memberId)
+                                ->selectRaw('
+                                    id,
+                                    CASE
+                                        WHEN UPPER(product_name) = "CASH" THEN "CASH"
+                                        ELSE CONCAT(UPPER(product_name), " (", account_number, ")")
+                                    END as display_name
+                                ')
+                                ->get();
 
-                    $options = $accounts->pluck('display_name', 'id')->toArray();
+                            $options = $accounts->pluck('display_name', 'id')->toArray();
 
-                    $hasCash = $accounts->contains(function ($account) {
-                        return strtoupper($account->display_name) === 'CASH';
-                    });
+                            $hasCash = $accounts->contains(function ($account) {
+                                return strtoupper($account->display_name) === 'CASH';
+                            });
 
-                    if (! $hasCash) {
-                        $options = ['0' => 'CASH'] + $options;
-                    }
+                            if (! $hasCash) {
+                                $options = ['0' => 'CASH'] + $options;
+                            }
 
-                    return $options;
-                })
-                ->createOptionForm([
-                    ...ProductAccountResource::getProductAccountDetails(),
-                ])
-                ->createOptionUsing(function (array $data, $livewire) {
-                    $memberId = $livewire->getOwnerRecord()->id;
+                            return $options;
+                        })
+                        ->createOptionForm([
+                            ...ProductAccountResource::getProductAccountDetails(),
+                        ])
+                        ->createOptionUsing(function (array $data, $livewire) {
+                            $memberId = $livewire->getOwnerRecord()->id;
 
-                    $productAccount = ProductAccount::create([
-                        'member_id' => $memberId,
-                        'product_name' => $data['product_name'],
-                        'account_number' => $data['account_number'],
-                    ]);
+                            $productAccount = ProductAccount::create([
+                                'member_id' => $memberId,
+                                'product_name' => $data['product_name'],
+                                'account_number' => $data['account_number'],
+                            ]);
 
-                    return $productAccount->id;
-                })
-                ->required()
-                ->preload()
-                ->searchable()
-                ->placeholder('Select an account...')
-                ->columnSpan(2),
+                            return $productAccount->id;
+                        })
+                        ->required()
+                        ->preload()
+                        ->searchable()
+                        ->placeholder('Select an account...')
+                        ->columnSpan(2),
+                    ])
         ];
     }
 
@@ -201,6 +207,8 @@ class SubscriptionsRelationManager extends RelationManager
             ])
             ->headerActions([
                 Tables\Actions\CreateAction::make()
+                    ->label('Add Subscription')
+                    ->icon('heroicon-o-plus-circle')
                     ->mutateFormDataUsing(function (array $data, RelationManager $livewire) {
                         if ($data['product_account_id'] === '0') {
                             $cashAccount = ProductAccount::create([
@@ -213,25 +221,27 @@ class SubscriptionsRelationManager extends RelationManager
                         }
 
                         return $data;
+                    }),
+                Tables\Actions\Action::make('download_pdf')
+                    ->label('Print Details')
+                    ->icon('heroicon-o-printer')
+                    ->color('success')
+                    ->action(function (RelationManager $livewire) {
+                        $member = $livewire->getOwnerRecord();
+
+                        $pdf = app(SubscriptionPdfService::class)->generate($member);
+
+                        return Response::streamDownload(function () use ($pdf) {
+                            echo $pdf->stream();
+                        }, 'Subscriptions_' . $member->full_name . '.pdf');
                     })
             ])
             ->actions([
-                Tables\Actions\ActionGroup::make([
-                    Tables\Actions\ViewAction::make()
-                        ->label('View Subscription')
-                        ->icon('heroicon-m-eye')
-                        ->color('info'),
 
                     Tables\Actions\EditAction::make()
-                        ->label('Edit Subscription')
+                        ->label('Edit')
                         ->icon('heroicon-m-pencil-square')
                         ->color('warning'),
-                ])
-                ->label('Actions')
-                ->icon('heroicon-m-ellipsis-vertical')
-                ->size('sm')
-                ->tooltip('More actions')
-                ->color('gray'),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([

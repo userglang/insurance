@@ -155,9 +155,9 @@ class Subscription extends Model
      */
     public function scopeActive($query)
     {
-        return $query->where('activated_at', '<=', now())
-                    ->where('expires_at', '>', now());
+        return $query->where('expires_at', '>', now());
     }
+
 
     /**
      * Scope a query to only include expired subscriptions.
@@ -177,7 +177,16 @@ class Subscription extends Model
 
     public function scopeExpiringSoon($query)
     {
-        return $query->whereBetween('expires_at', [now(), now()->addDays(30)]);
+        return $query->whereIn('id', function ($subquery) {
+            $subquery->selectRaw('id')
+                ->from('subscriptions as s1')
+                ->whereBetween('s1.expires_at', [now(), now()->addDays(30)])
+                ->whereRaw('s1.activated_at = (
+                SELECT MAX(s2.activated_at)
+                FROM subscriptions as s2
+                WHERE s2.member_id = s1.member_id
+            )');
+        });
     }
 
     /**

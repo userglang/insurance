@@ -2,6 +2,8 @@
 
 namespace App\Providers\Filament;
 
+use App\Filament\Pages\Reports;
+use App\Filament\Pages\SubscriptionReport;
 use App\Filament\Resources\MemberResource;
 use App\Filament\Widgets\SubscriptionTable;
 use Filament\Actions\Action;
@@ -36,7 +38,8 @@ class MainPanelProvider extends PanelProvider
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\\Filament\\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\\Filament\\Pages')
             ->pages([
-//                Pages\Dashboard::class,
+                Pages\Dashboard::class,
+                SubscriptionReport::class,
             ])
             ->discoverWidgets(in: app_path('Filament/Widgets'), for: 'App\\Filament\\Widgets')
             ->widgets([

@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\Relation;
 
 class BranchSubscriptionTable extends BaseWidget
 {
+    protected static ?int $sort = 3;
     protected static ?string $heading = 'Branch Subscription Overview';
 
     protected int | string | array $columnSpan = 'full';

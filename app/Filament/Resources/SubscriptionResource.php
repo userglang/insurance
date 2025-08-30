@@ -47,74 +47,60 @@ class SubscriptionResource extends Resource
     {
         return $form
             ->schema([
-                Forms\Components\Section::make('Subscription Details')
-                ->description('Basic subscription information')
-                ->schema([
-                    ...self::getMember(),
-                    ...self::getSubscriptionDetails(),
-                    ...self::getProductAccountID(),
-                ])->columns(2),
+                ...ProductAccountResource::getAccountDetails(),
+                ...self::getSubscriptionDetails(),
+                ...self::getProductAccountID(),
                 ...self::getAdditionalInformation(),
             ]);
-    }
-    public static function getMember(): array
-    {
-        return
-        [
-            Forms\Components\Select::make('member_id')
-                ->label('Member Name')
-                ->relationship('member', 'first_name')
-                ->getOptionLabelFromRecordUsing(fn ($record) => $record->first_name . ', ' . $record->middle_name. ' ' . $record->last_name. ' ' . $record->suffix)
-                ->searchable()
-                ->preload()
-                ->required()
-                ->live() // 👈 This makes the field reactive
-                ->columnSpan(2),
-        ];
     }
 
     public static function getSubscriptionDetails(): array
     {
-        return
-        [
-            Forms\Components\Select::make('insurance_id')
-                ->label('Insurance Name')
-                ->options(
-                    Insurance::where('is_active', true)
-                        ->pluck('insurance_name', 'id')
-                        ->toArray()
-                )
-                ->preload()
-                ->required()
-                ->placeholder('Select an account...')
-                ->default(fn () => Insurance::where('is_active', true)->value('id'))
-                ->columnSpan(1)
-                ->visible(true), // hides the field
+        return [
+            Forms\Components\Section::make('Subscription Details')
+                ->description('Configure insurance subscription information and payment details')
+                ->schema([
+                    Grid::make(2)
+                        ->schema([
+                            Forms\Components\Select::make('insurance_id')
+                                ->label('Insurance Name')
+                                ->options(
+                                    Insurance::where('is_active', true)
+                                        ->pluck('insurance_name', 'id')
+                                        ->toArray()
+                                )
+                                ->preload()
+                                ->required()
+                                ->placeholder('Select an account...')
+                                ->default(fn () => Insurance::where('is_active', true)->value('id'))
+                                ->columnSpan(1)
+                                ->visible(true), // hides the field
 
-            Forms\Components\DatePicker::make('activated_at')
-                ->label('Subscription Date')
-                ->required()
-                ->default(now())
-                ->displayFormat('M j, Y')
-                ->columnSpan(1),
+                            Forms\Components\DatePicker::make('activated_at')
+                                ->label('Subscription Date')
+                                ->required()
+                                ->default(now())
+                                ->displayFormat('M j, Y')
+                                ->columnSpan(1),
 
+                            Forms\Components\TextInput::make('amount')
+                                ->label('Subscription Amount')
+                                ->required()
+                                ->numeric()
+                                ->prefix('₱')
+                                ->minValue(1)
+                                ->step(0.01)
+                                ->default(160.00)
+                                ->columnSpan(1),
 
-            Forms\Components\TextInput::make('amount')
-                ->label('Subscription Amount')
-                ->required()
-                ->numeric()
-                ->prefix('₱')
-                ->minValue(1)
-                ->step(0.01)
-                ->default(160.00)
-                ->columnSpan(1),
-
-            Forms\Components\DatePicker::make('payment_date')
-                ->label('Payment Date')
-                ->required()
-                ->default(now())
-                ->displayFormat('M j, Y')
-                ->columnSpan(1),
+                            Forms\Components\DatePicker::make('payment_date')
+                                ->label('Payment Date')
+                                ->required()
+                                ->default(now())
+                                ->displayFormat('M j, Y')
+                                ->columnSpan(1),
+                        ]),
+                ])
         ];
     }
 
@@ -122,69 +108,73 @@ class SubscriptionResource extends Resource
     {
         return
         [
-            Forms\Components\Select::make('product_account_id')
-                ->label('Account')
-                ->options(function (callable $get) {
-                    $memberId = $get('member_id');
+            Forms\Components\Section::make('Account Selection')
+                ->description('Select an existing account or create a new one for the member')
+                ->schema([
+                    Forms\Components\Select::make('product_account_id')
+                        ->label('Account')
+                        ->options(function (callable $get) {
+                            $memberId = $get('member_id');
 
-                    if (!$memberId) {
-                        return [];
-                    }
-
-                    // Get existing accounts with proper formatting
-                    $accounts = ProductAccount::where('member_id', $memberId)
-                        ->get()
-                        ->mapWithKeys(function ($account) {
-                            $productName = strtoupper($account->product_name);
-
-                            // If product name is CASH, display only CASH
-                            if ($productName === 'CASH') {
-                                $label = 'CASH';
-                            } else {
-                                $label = $productName . ' (' . $account->account_number . ')';
+                            if (!$memberId) {
+                                return [];
                             }
 
-                            return [$account->id => $label];
+                            // Get existing accounts with proper formatting
+                            $accounts = ProductAccount::where('member_id', $memberId)
+                                ->get()
+                                ->mapWithKeys(function ($account) {
+                                    $productName = strtoupper($account->product_name);
+
+                                    // If product name is CASH, display only CASH
+                                    if ($productName === 'CASH') {
+                                        $label = 'CASH';
+                                    } else {
+                                        $label = $productName . ' (' . $account->account_number . ')';
+                                    }
+
+                                    return [$account->id => $label];
+                                })
+                                ->toArray();
+
+                            // Check if CASH already exists in the database
+                            $cashExists = ProductAccount::where('member_id', $memberId)
+                                ->whereRaw('UPPER(TRIM(product_name)) = ?', ['CASH'])
+                                ->exists();
+
+                            // If CASH doesn't exist, add it as an option with ID 0
+                            if (!$cashExists) {
+                                $accounts = ['0' => 'CASH'] + $accounts;
+                            }
+
+                            return $accounts;
                         })
-                        ->toArray();
+                        ->createOptionForm([
+                            ...ProductAccountResource::getProductAccountDetails()
+                        ])
+                        ->createOptionUsing(function (array $data, callable $get) {
+                            $memberId = $get('member_id');
 
-                    // Check if CASH already exists in the database
-                    $cashExists = ProductAccount::where('member_id', $memberId)
-                        ->whereRaw('UPPER(TRIM(product_name)) = ?', ['CASH'])
-                        ->exists();
+                            if (!$memberId) {
+                                throw new \Exception("Please select a member before creating an account.");
+                            }
 
-                    // If CASH doesn't exist, add it as an option with ID 0
-                    if (!$cashExists) {
-                        $accounts = ['0' => 'CASH'] + $accounts;
-                    }
+                            $productAccount = ProductAccount::create([
+                                'member_id' => $memberId,
+                                'product_name' => $data['product_name'],
+                                'account_number' => $data['account_number'],
+                            ]);
 
-                    return $accounts;
-                })
-                ->createOptionForm([
-                    ...ProductAccountResource::getProductAccountDetails()
-                ])
-                ->createOptionUsing(function (array $data, callable $get) {
-                    $memberId = $get('member_id');
-
-                    if (!$memberId) {
-                        throw new \Exception("Please select a member before creating an account.");
-                    }
-
-                    $productAccount = ProductAccount::create([
-                        'member_id' => $memberId,
-                        'product_name' => $data['product_name'],
-                        'account_number' => $data['account_number'],
-                    ]);
-
-                    return $productAccount->id;
-                })
-                ->disabled(fn (callable $get) => !$get('member_id')) // 👈 disable field until member is selected
-                ->helperText(fn (callable $get) => !$get('member_id') ? 'Select a member first to choose or create an account.' : null)
-                ->reactive()
-                ->required()
-                ->preload()
-                ->placeholder('Select an account...')
-                ->columnSpan(2),
+                            return $productAccount->id;
+                        })
+                        ->disabled(fn (callable $get) => !$get('member_id')) // 👈 disable field until member is selected
+                        ->helperText(fn (callable $get) => !$get('member_id') ? 'Select a member first to choose or create an account.' : null)
+                        ->reactive()
+                        ->required()
+                        ->preload()
+                        ->placeholder('Select an account...')
+                        ->columnSpan(2),
+                    ]),
         ];
     }
 

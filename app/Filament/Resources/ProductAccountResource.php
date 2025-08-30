@@ -55,6 +55,7 @@ class ProductAccountResource extends Resource
                         ->searchable()
                         ->preload()
                         ->required()
+                        ->live() // 👈 This makes the field reactive
                         ->placeholder('Select a member')
                         ->helperText('Choose the member this record belongs to')
                         ->createOptionForm([
@@ -72,33 +73,36 @@ class ProductAccountResource extends Resource
     }
     public static function getProductAccountDetails(): array
     {
-        return
-        [
-            Grid::make(2)
+        return [
+            Forms\Components\Section::make('Product Information')
+                ->description('Enter the basic details about the product or service')
                 ->schema([
-                    Forms\Components\TextInput::make('product_name')
-                        ->label('Product Name')
-                        ->required()
-                        ->maxLength(255)
-                        ->placeholder('Enter product name')
-                        ->helperText('The name of the product or service')
-                        ->autocomplete('off')
-                        ->live(onBlur: true)
-                        ->afterStateUpdated(function (string $state, callable $set) {
-                            // Auto-capitalize first letter of each word
-                            $set('product_name', ucwords(strtolower($state)));
-                        }),
+                    Grid::make(2)
+                        ->schema([
+                            Forms\Components\TextInput::make('product_name')
+                                ->label('Product Name')
+                                ->required()
+                                ->maxLength(255)
+                                ->placeholder('Enter product name')
+                                ->helperText('The name of the product or service')
+                                ->autocomplete('off')
+                                ->live(onBlur: true)
+                                ->afterStateUpdated(function (string $state, callable $set) {
+                                    // Auto-capitalize first letter of each word
+                                    $set('product_name', ucwords(strtolower($state)));
+                                }),
 
-                    Forms\Components\TextInput::make('account_number')
-                        ->label('Account Number')
-                        ->required()
-                        ->maxLength(255)
-                        ->placeholder('Enter account number')
-                        ->helperText('Unique identifier for this account')
-                        // ->mask('9999-9999-9999') // Adjust mask pattern as needed
-                        ->rule('alpha_num')
-                        ->unique(ignoreRecord: true),
-                ])
+                            Forms\Components\TextInput::make('account_number')
+                                ->label('Account Number')
+                                ->required()
+                                ->maxLength(255)
+                                ->placeholder('Enter account number')
+                                ->helperText('Unique identifier for this account')
+                                // ->mask('9999-9999-9999') // Adjust mask pattern as needed
+                                ->rule('alpha_num')
+                                ->unique(ignoreRecord: true),
+                        ])
+                ]),
         ];
     }
 
@@ -108,7 +112,7 @@ class ProductAccountResource extends Resource
         return $table
             ->columns([
                 Tables\Columns\TextColumn::make('member.full_name')
-                    ->searchable(),
+                    ->searchable(['first_name', 'last_name', 'middle_name']),
                 Tables\Columns\TextColumn::make('product_name')
                     ->searchable(),
                 Tables\Columns\TextColumn::make('account_number')

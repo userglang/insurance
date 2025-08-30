@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\MemberResource\Pages;
 
 use App\Models\Member;
+use Filament\Forms\Components\FileUpload;
 use Filament\Resources\Pages\Page;
 use Filament\Pages\Actions\EditAction; // <-- Make sure this is imported
 use Filament\Pages\Actions; // Needed for other actions
@@ -35,13 +36,24 @@ class ViewMember extends Page
         return static::generateRouteName($panel, 'view');
     }
 
+
     protected function getHeaderActions(): array
     {
         return [
             Actions\Action::make('edit')
                 ->label('Edit Profile')
                 ->url(fn () => route('filament.main.resources.members.edit', $this->record))
+                ->icon('heroicon-o-pencil-square')
                 ->color('primary'),
+
+            Actions\Action::make('download_pdf')
+                ->label('Print Profile')
+                ->color('success')
+                ->icon('heroicon-o-printer')
+                ->url(fn () => route('member.print', $this->record))
+                ->openUrlInNewTab()
+                ->requiresConfirmation(),
+
         ];
     }
 }

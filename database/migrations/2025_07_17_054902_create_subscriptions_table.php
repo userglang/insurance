@@ -53,7 +53,7 @@ return new class extends Migration
             $table->index('expires_at');
 
             // Optional: enforce one subscription per member-product pair
-            $table->unique(['member_id', 'insurance_id', 'product_account_id'], 'unique_member_product');
+//            $table->unique(['member_id', 'insurance_id', 'product_account_id'], 'unique_member_product');
         });
     }
 

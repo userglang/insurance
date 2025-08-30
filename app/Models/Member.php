@@ -48,6 +48,7 @@ class Member extends Model
         'is_active',
         'status', // ← Added status to fillable
         'remark',
+        'created_at',
     ];
 
     protected $casts = [
@@ -142,6 +143,14 @@ class Member extends Model
         return $this->hasOne(Subscription::class)->latestOfMany('expires_at');
     }
 
+
+    public function latestActiveSubscription()
+    {
+        return $this->hasOne(Subscription::class)
+            ->active()
+            ->latest('expires_at');
+    }
+
     // Accessors
     public function getFullNameAttribute(): string
     {
@@ -221,27 +230,31 @@ class Member extends Model
      */
     public static function findSimilarMembers($firstName, $lastName, $middleName = null, $birthDate = null, $excludeId = null)
     {
-        $query = static::where('first_name', $firstName)
+        // Base query: only active members with matching first & last name
+        $baseQuery = static::query()
+            ->where('is_active', true)
+            ->where('first_name', $firstName)
             ->where('last_name', $lastName);
 
-        if ($excludeId) {
-            $query->where('id', '!=', $excludeId);
-        }
-
         if ($birthDate) {
-            $query->where('birth_date', $birthDate);
+            $baseQuery->where('birth_date', $birthDate);
         }
 
-        // Check both with and without middle name
-        $exactMatch = clone $query;
-        if ($middleName) {
+        if ($excludeId) {
+            $baseQuery->where('id', '!=', $excludeId);
+        }
+
+        // Exact match: middle name must match exactly or be null if not provided
+        $exactMatch = (clone $baseQuery);
+        if ($middleName !== null) {
             $exactMatch->where('middle_name', $middleName);
         } else {
             $exactMatch->whereNull('middle_name');
         }
 
-        $similarMatch = clone $query;
-        if ($middleName) {
+        // Similar match: middle name contains, or is null (for broader matching)
+        $similarMatch = (clone $baseQuery);
+        if ($middleName !== null) {
             $similarMatch->where(function ($q) use ($middleName) {
                 $q->where('middle_name', 'LIKE', "%$middleName%")
                     ->orWhereNull('middle_name');
@@ -250,7 +263,8 @@ class Member extends Model
 
         return [
             'exact' => $exactMatch->get(),
-            'similar' => $similarMatch->get()
+            'similar' => $similarMatch->get(),
         ];
     }
+
 }

@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 
 class SubscriptionTable extends BaseWidget
 {
+    protected static ?int $sort = 2;
     protected int|string|array $columnSpan = 'full'; // use 'full', '2', '3' etc., based on your layout
 
     public function table(Table $table): Table
