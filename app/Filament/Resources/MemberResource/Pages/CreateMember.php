@@ -16,6 +16,7 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
@@ -25,6 +26,8 @@ class CreateMember extends CreateRecord
     use HasWizard;
 
     protected static string $resource = MemberResource::class;
+
+
 
     public static function getSteps(): array
     {

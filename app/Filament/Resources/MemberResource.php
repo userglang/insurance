@@ -18,6 +18,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use League\Csv\Writer;
@@ -34,19 +35,30 @@ class MemberResource extends Resource
     public static function getNavigationBadge(): ?string
     {
         // Cache expensive badge calculations for 5 minutes
-        return Cache::remember('member_navigation_badge', 300, function () {
-            $counts = DB::table('members as m')
+        return Cache::remember('member_navigation_badge_' . Auth::id(), 300, function () {
+            $query = DB::table('members as m')
                 ->leftJoin('subscriptions as s', function ($join) {
                     $join->on('m.id', '=', 's.member_id')
                         ->whereRaw('s.id = (SELECT id FROM subscriptions WHERE member_id = m.id ORDER BY expires_at DESC LIMIT 1)');
                 })
                 ->where('m.is_active', true)
-                ->where('m.status', 'accepted')
-                ->selectRaw('
-                    COUNT(CASE WHEN s.expires_at BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 30 DAY) THEN 1 END) as expiring_soon,
-                    COUNT(CASE WHEN s.expires_at < NOW() THEN 1 END) as expired
-                ')
-                ->first();
+                ->where('m.status', 'accepted');
+
+            // Apply role-based filtering for navigation badge
+            $user = Auth::user();
+            if ($user && !$user->hasRole('super_admin')) {
+                if ($user->branch->branch_number) {
+                    $query->where('m.branch_number', $user->branch->branch_number);
+                } else {
+                    // If user has no branch assigned and isn't super admin, show 0
+                    return null;
+                }
+            }
+
+            $counts = $query->selectRaw('
+                COUNT(CASE WHEN s.expires_at BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 30 DAY) THEN 1 END) as expiring_soon,
+                COUNT(CASE WHEN s.expires_at < NOW() THEN 1 END) as expired
+            ')->first();
 
             $total = ($counts->expiring_soon ?? 0) + ($counts->expired ?? 0);
             return $total > 0 ? (string) $total : null;
@@ -65,11 +77,23 @@ class MemberResource extends Resource
 
     public static function getGlobalSearchEloquentQuery(): Builder
     {
-        return parent::getGlobalSearchEloquentQuery()
+        $query = parent::getGlobalSearchEloquentQuery()
             ->select(['id', 'cid', 'first_name', 'last_name', 'branch_number', 'is_active'])
-            // ->where('is_active', true)
             ->orderBy('is_active', 'desc')
             ->with('branch:id,branch_number,branch_name');
+
+        // Apply role-based filtering for global search
+        $user = Auth::user();
+        if ($user && !$user->hasRole('super_admin')) {
+            if ($user->branch->branch_number) {
+                $query->where('branch_number', $user->branch->branch_number);
+            } else {
+                // If user has no branch assigned and isn't super admin, return empty results
+                $query->whereRaw('1 = 0');
+            }
+        }
+
+        return $query;
     }
 
     public static function getGlobalSearchResultTitle(Model $record): string
@@ -132,13 +156,41 @@ class MemberResource extends Resource
                             Forms\Components\Select::make('branch_number')
                                 ->label('Branch')
                                 ->placeholder('Select a branch')
-                                ->options(fn () => Cache::remember('branches_options', 3600,
-                                    fn () => Branch::pluck('branch_name', 'branch_number')
-                                ))
+                                ->options(function () {
+                                    $user = Auth::user();
+
+                                    // For super_admin, show all branches
+                                    if ($user && $user->hasRole('super_admin')) {
+                                        return Cache::remember('branches_options', 3600,
+                                            fn () => Branch::pluck('branch_name', 'branch_number')
+                                        );
+                                    }
+
+                                    // For other roles, show only their assigned branch
+                                    if ($user && $user->branch->branch_number) {
+                                        return Branch::where('branch_number', $user->branch->branch_number)
+                                            ->pluck('branch_name', 'branch_number');
+                                    }
+
+                                    return [];
+                                })
                                 ->searchable()
                                 ->preload()
                                 ->required()
-                                ->helperText('Select the branch this client belongs to'),
+                                ->helperText('Select the branch this client belongs to')
+                                ->default(function () {
+                                    $user = Auth::user();
+                                    // Auto-select user's branch if they're not super admin
+                                    if ($user && !$user->hasRole('super_admin') && $user->branch->branch_number) {
+                                        return $user->branch->branch_number;
+                                    }
+                                    return null;
+                                })
+                                ->disabled(function () {
+                                    $user = Auth::user();
+                                    // Disable field for non-super admins (auto-select their branch)
+                                    return $user && !$user->hasRole('super_admin');
+                                }),
                         ]),
 
                     Forms\Components\Grid::make(3)
@@ -408,35 +460,6 @@ class MemberResource extends Resource
         ];
     }
 
-    public static function tableQuery(): Builder
-    {
-        // Optimized base query with selective fields and indexed columns
-        return parent::tableQuery()
-            ->select([
-                'members.id',
-                'members.cid',
-                'members.first_name',
-                'members.middle_name',
-                'members.last_name',
-                'members.email',
-                'members.status',
-                'members.birth_date',
-                'members.gender',
-                'members.marital_status',
-                'members.occupation',
-                'members.employment_status',
-                'members.branch_number',
-                'members.contact_number',
-                'members.city',
-                'members.province',
-                'members.barangay',
-                'members.created_at',
-                'members.is_active',
-            ])
-            ->with([
-                'branch:id,branch_number,branch_name'
-            ]);
-    }
 
     public static function table(Table $table): Table
     {
@@ -592,12 +615,28 @@ class MemberResource extends Resource
 
                 Tables\Filters\SelectFilter::make('branch_number')
                     ->label('Branch')
-                    ->options(fn () => Cache::remember('branch_filter_options', 3600,
-                        fn () => Branch::pluck('branch_name', 'branch_number')
-                    ))
+                    ->options(function () {
+                        $user = Auth::user();
+
+                        // For super_admin, show all branches
+                        if ($user && $user->hasRole('super_admin')) {
+                            return Cache::remember('branch_filter_options', 3600,
+                                fn () => Branch::pluck('branch_name', 'branch_number')
+                            );
+                        }
+
+                        // For other roles, show only their assigned branch
+                        if ($user && $user->branch_number) {
+                            return Branch::where('branch_number', $user->branch_number)
+                                ->pluck('branch_name', 'branch_number');
+                        }
+
+                        return [];
+                    })
                     ->searchable()
                     ->preload()
-                    ->placeholder('All Branches'),
+                    ->placeholder('All Branches')
+                    ->visible(fn () => Auth::user()?->hasRole('super_admin')),
 
                 Tables\Filters\SelectFilter::make('gender')
                     ->label('Gender')
@@ -660,12 +699,23 @@ class MemberResource extends Resource
                         ->color('info'),
 
                     Tables\Actions\Action::make('toggle_status')
-                        ->label(fn (Model $record): string => $record->is_active ? 'Deactivate' : 'Activate')
-                        ->icon(fn (Model $record): string => $record->is_active ? 'heroicon-o-x-circle' : 'heroicon-o-check-circle')
-                        ->color(fn (Model $record): string => $record->is_active ? 'danger' : 'success')
+                        ->label(fn (Model $record): string =>
+                            Auth::user()->hasRole('super_admin') ?
+                            ($record->is_active ? 'Deactivate' : 'Activate') :
+                            'Deactivate' // For non-super-admins, always show "Deactivate"
+                        )
+                        ->icon(fn (Model $record): string =>
+                            Auth::user()->hasRole('super_admin') ?
+                            ($record->is_active ? 'heroicon-o-x-circle' : 'heroicon-o-check-circle') :
+                            'heroicon-o-x-circle' // For non-super-admins, show only the deactivate icon
+                        )
+                        ->color(fn (Model $record): string =>
+                            $record->is_active ? 'danger' : 'success'
+                        )
                         ->requiresConfirmation()
                         ->action(function (Model $record) {
                             try {
+                                // Only super_admin can activate/deactivate, so we don't need additional checks here
                                 $record->update(['is_active' => !$record->is_active]);
                                 Notification::make()
                                     ->success()
@@ -734,7 +784,8 @@ class MemberResource extends Resource
                                 ->success()
                                 ->title('Members Activated')
                                 ->body('Selected members have been activated successfully.')
-                        ),
+                        )
+                        ->visible(fn () => Auth::user() && Auth::user()->hasRole('super_admin')), // Only visible to super_admin
 
                     Tables\Actions\BulkAction::make('deactivate')
                         ->label('Deactivate Selected')

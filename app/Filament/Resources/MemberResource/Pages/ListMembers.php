@@ -18,6 +18,7 @@ use Filament\Resources\Pages\ListRecords;
 use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Database\Eloquent\Builder;
 use Filament\Actions\Action;
+use Illuminate\Support\Facades\Auth;
 use Maatwebsite\Excel\Validators\ValidationException;
 use Illuminate\Support\Facades\Cache;
 
@@ -179,6 +180,53 @@ class ListMembers extends ListRecords
                     }
                 }),
         ];
+    }
+
+    public function getTableQuery(): Builder
+    {
+        $query = parent::getTableQuery()
+            ->select([
+                'members.id',
+                'members.cid',
+                'members.first_name',
+                'members.middle_name',
+                'members.last_name',
+                'members.email',
+                'members.status',
+                'members.birth_date',
+                'members.gender',
+                'members.marital_status',
+                'members.occupation',
+                'members.employment_status',
+                'members.branch_number',
+                'members.contact_number',
+                'members.city',
+                'members.province',
+                'members.barangay',
+                'members.created_at',
+                'members.is_active',
+            ])
+            ->with([
+                'branch:id,branch_number,branch_name'
+            ]);
+
+        $user = Auth::user();
+
+        if ($user && !$user->hasRole('super_admin')) {
+            if ($user->branch->branch_number) {
+                $query->where('members.branch_number', $user->branch->branch_number);
+            } else {
+                // No branch assigned, no data shown
+                $query->whereRaw('1 = 0');
+            }
+        }
+
+        // Apply the 'is_active' condition only for super_admin
+        if ($user && !$user->hasRole('super_admin')) {
+            $query->where('members.is_active', '=', true);
+        }
+
+        return $query;
     }
 
     // public function getTabs(): array

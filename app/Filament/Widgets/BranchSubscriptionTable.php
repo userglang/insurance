@@ -9,6 +9,7 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Widgets\TableWidget as BaseWidget;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Support\Facades\Auth;
 
 class BranchSubscriptionTable extends BaseWidget
 {
@@ -18,10 +19,50 @@ class BranchSubscriptionTable extends BaseWidget
     protected int | string | array $columnSpan = 'full';
 
     /**
+     * Method 1: Using canView() method (recommended)
+     */
+    public static function canView(): bool
+    {
+        $user = Auth::user();
+        return Auth::check() && $user->hasRole('super_admin');
+    }
+
+    /**
+     * Method 2: Alternative using shouldRegisterNavigation()
+     * Uncomment this method if you prefer this approach instead of canView()
+     */
+    // public static function shouldRegisterNavigation(): bool
+    // {
+    //     $user = Auth::user();
+    //     return Auth::check() && $user->hasRole('super_admin');
+    // }
+
+    /**
+     * Method 3: Using getWidgetVisibility() for more complex logic
+     * Uncomment this method if you need more complex visibility logic
+     */
+    // protected function getWidgetVisibility(): bool
+    // {
+    //     $user = Auth::user();
+    //
+    //     // Example: Show for super_admin or admin with special permission
+    //     return Auth::check() && (
+    //         $user->hasRole('super_admin') ||
+    //         ($user->hasRole('admin') && $user->hasPermission('view_branch_subscriptions'))
+    //     );
+    // }
+
+    /**
      * Required: Must match parent method signature exactly
      */
     protected function getTableQuery(): Builder | Relation | null
     {
+        // Double-check authorization at query level as extra security
+        $user = Auth::user();
+        if (!Auth::check() || !$user->hasRole('super_admin')) {
+            return Branch::query()->whereRaw('1 = 0'); // Return empty query
+        }
+
         return Branch::query()
             ->with(['members.subscriptions' => function ($query) {
                 $query->where('expires_at', '>', now());
@@ -86,7 +127,6 @@ class BranchSubscriptionTable extends BaseWidget
     protected function getTableFilters(): array
     {
         return [
-
             Tables\Filters\Filter::make('low_subscription_rate')
                 ->label('Low Subscription Rate (< 60%)')
                 ->query(function (Builder $query) {
@@ -138,5 +178,4 @@ class BranchSubscriptionTable extends BaseWidget
                 }),
         ];
     }
-
 }

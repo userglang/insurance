@@ -126,6 +126,12 @@ class UserResource extends Resource
                         ->helperText('Choose the primary branch where this person will work')
                         ->suffixIcon('heroicon-m-building-office'),
 
+                    Select::make('roles')
+                        ->relationship('roles', 'name')
+                        ->multiple()
+                        ->preload()
+                        ->searchable(),
+
                     Toggle::make('is_active')
                         ->label('Account Status')
                         ->helperText('Turn off to temporarily disable login access')

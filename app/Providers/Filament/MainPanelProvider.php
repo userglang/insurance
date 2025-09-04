@@ -3,6 +3,7 @@
 namespace App\Providers\Filament;
 
 use App\Filament\Pages\Reports;
+use BezhanSalleh\FilamentShield\FilamentShieldPlugin;
 use App\Filament\Pages\SubscriptionReport;
 use App\Filament\Resources\MemberResource;
 use App\Filament\Widgets\SubscriptionTable;
@@ -56,6 +57,10 @@ class MainPanelProvider extends PanelProvider
                 SubstituteBindings::class,
                 DisableBladeIconComponents::class,
                 DispatchServingFilamentEvent::class,
+            ])
+            ->plugins([
+                FilamentShieldPlugin::make(),
+                \BezhanSalleh\FilamentShield\FilamentShieldPlugin::make(),
             ])
             ->authMiddleware([
                 Authenticate::class,

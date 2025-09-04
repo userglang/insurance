@@ -114,9 +114,9 @@ class MemberUpload implements ToModel, WithHeadingRow, WithChunkReading, ShouldQ
                 'city' => $row['city'] ?? null,
                 'province' => $row['province'] ?? null,
                 'zipcode' => $row['zipcode'] ?? null,
-                'remark' => $row['remarks'] ?? null,
+                'remark' => $row['remark'] ?? null,
                 'contact_number' => $row['contact_number'] ?? null,
-                'is_active' => true,
+                'is_active' => ($row['active'] === 'Active') ? true : false,
                 'status' => 'accepted',
                 'created_at' => $createdAt,
             ]);

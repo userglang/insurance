@@ -7,6 +7,9 @@ use Filament\Forms\Components\FileUpload;
 use Filament\Resources\Pages\Page;
 use Filament\Pages\Actions\EditAction; // <-- Make sure this is imported
 use Filament\Pages\Actions; // Needed for other actions
+use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Gate;
 
 class ViewMember extends Page
 {
@@ -18,6 +21,8 @@ class ViewMember extends Page
 
     public function mount(Member $record): void
     {
+        Gate::authorize('view', $record); // ✅ This calls MemberPolicy@view()
+
         $this->record = $record;
     }
 

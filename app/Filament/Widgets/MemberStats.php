@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Auth;
 
 class MemberStats extends BaseWidget
 {
@@ -22,19 +23,52 @@ class MemberStats extends BaseWidget
      */
     public static function canView(): bool
     {
-        return true;
+        return Auth::check() && (
+            Auth::user()->hasRole('super_admin') ||
+            Auth::user()->branch_id !== null
+        );
+    }
+
+    /**
+     * Get the user's branch filter - returns branch_number for filtering
+     */
+    private function getBranchFilter(): ?string
+    {
+        $user = Auth::user();
+
+        // Super admin can see all data
+        if ($user->hasRole('super_admin')) {
+            return null;
+        }
+
+        // Get branch_number from user's branch relationship
+        if ($user->branch_id && $user->branch) {
+            return $user->branch->branch_number;
+        }
+
+        return null;
+    }
+
+    /**
+     * Get cache key based on user role and branch
+     */
+    private function getCacheKey(): string
+    {
+        $user = Auth::user();
+        $branchNumber = $user->hasRole('super_admin') ? 'all' : ($this->getBranchFilter() ?? 'no_branch');
+
+        return sprintf(
+            'member_stats_v3_%s_%s_%d_%s',
+            now()->format('Y-m-d-H'),
+            floor(now()->minute / 15),
+            config('app.cache_version', 1),
+            $branchNumber
+        );
     }
 
     protected function getStats(): array
     {
-        // Enhanced cache key for performance
-        $cacheKey = sprintf(
-            'member_stats_v3_%s_%s_%d',
-            now()->format('Y-m-d-H'),
-            floor(now()->minute / 15),
-            config('app.cache_version', 1)
-        );
-
+        $cacheKey = $this->getCacheKey();
         $cacheDuration = now()->addMinutes(15);
 
         $stats = Cache::remember($cacheKey, $cacheDuration, function () {
@@ -49,7 +83,7 @@ class MemberStats extends BaseWidget
         $now = Carbon::now();
 
         try {
-            // Get statistics with proper error handling
+            // Get statistics with proper error handling and branch filtering
             $memberStats = $this->getMemberStatsInOneQuery($now);
             $subscriptionStats = $this->getSubscriptionStatsInOneQuery($now);
 
@@ -63,8 +97,10 @@ class MemberStats extends BaseWidget
 
     private function getMemberStatsInOneQuery(Carbon $now): array
     {
-        // Use Eloquent with proper bindings for security
-        $result = Member::selectRaw("
+        $branchNumber = $this->getBranchFilter();
+
+        // Build query with branch filtering
+        $query = Member::selectRaw("
             COUNT(*) as total,
             COUNT(CASE WHEN status = 'accepted' THEN 1 END) as accepted,
             COUNT(CASE WHEN status = 'accepted' AND is_active = 1 THEN 1 END) as active,
@@ -72,9 +108,14 @@ class MemberStats extends BaseWidget
             COUNT(CASE WHEN status = 'declined' AND is_active = 1 THEN 1 END) as declined_active,
             COUNT(CASE WHEN is_active = 0 THEN 1 END) as archived,
             COUNT(CASE WHEN DATE(created_at) = ? AND is_active = 1 THEN 1 END) as new_today
-        ")
-        ->addBinding($now->toDateString(), 'select')
-        ->first();
+        ");
+
+        // Apply branch filter if not super_admin
+        if ($branchNumber !== null) {
+            $query->where('branch_number', $branchNumber);
+        }
+
+        $result = $query->addBinding($now->toDateString(), 'select')->first();
 
         if (!$result) {
             return $this->getDefaultMemberStats();
@@ -90,22 +131,36 @@ class MemberStats extends BaseWidget
 
     private function getSubscriptionStatsInOneQuery(Carbon $now): array
     {
+        $branchNumber = $this->getBranchFilter();
+
+        // Build base query with branch filtering
+        $baseQuery = DB::table('members as m')->where('m.is_active', 1);
+
+        // Apply branch filter if not super_admin
+        if ($branchNumber !== null) {
+            $baseQuery->where('m.branch_number', $branchNumber);
+        }
+
         // Get subscription statistics using your approach - latest subscription per member
-        $subscriptionResult = DB::table('members as m')
-            ->where('m.is_active', 1)
-            ->selectRaw("
+        $subscriptionResult = $baseQuery->selectRaw("
                 COUNT(CASE WHEN (SELECT expires_at FROM subscriptions WHERE member_id = m.id ORDER BY expires_at DESC LIMIT 1) > NOW() THEN 1 END) as active_subscriptions,
                 COUNT(CASE WHEN (SELECT expires_at FROM subscriptions WHERE member_id = m.id ORDER BY expires_at DESC LIMIT 1) < NOW() THEN 1 END) as expired,
                 COUNT(CASE WHEN (SELECT expires_at FROM subscriptions WHERE member_id = m.id ORDER BY expires_at DESC LIMIT 1) BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 30 DAY) THEN 1 END) as expires_soon
             ")
             ->first();
 
-        // Get revenue for current month separately
-        $revenueResult = DB::table('subscriptions')
-            ->whereYear('created_at', $now->year)
-            ->whereMonth('created_at', $now->month)
-            ->selectRaw('COALESCE(SUM(amount), 0) as revenue_this_month')
-            ->first();
+        // Get revenue for current month with branch filtering
+        $revenueQuery = DB::table('subscriptions as s')
+            ->join('members as m', 's.member_id', '=', 'm.id')
+            ->whereYear('s.created_at', $now->year)
+            ->whereMonth('s.created_at', $now->month);
+
+        // Apply branch filter for revenue if not super_admin
+        if ($branchNumber !== null) {
+            $revenueQuery->where('m.branch_number', $branchNumber);
+        }
+
+        $revenueResult = $revenueQuery->selectRaw('COALESCE(SUM(s.amount), 0) as revenue_this_month')->first();
 
         if (!$subscriptionResult) {
             return $this->getDefaultSubscriptionStats();
@@ -124,48 +179,50 @@ class MemberStats extends BaseWidget
             return is_numeric($value) ? (int) $value : 0;
         }, $stats);
 
+        $branchContext = $this->getBranchContext();
+
         return [
             // Active Members with percentage
             Stat::make('✅ Active Members', number_format($stats['active']))
-                ->description($this->getActivePercentageDescription($stats['active'], $stats['total']))
+                ->description($this->getActivePercentageDescription($stats['active'], $stats['total']) . $branchContext)
                 ->descriptionIcon('heroicon-m-check-circle')
                 ->color('success')
                 ->chart([$stats['active'], $stats['inactive']]),
 
             // Declined Members
             Stat::make('❌ Declined Members', number_format($stats['declined_active']))
-                ->description($this->getDeclinedPercentageDescription($stats['declined_active'], $stats['total']))
+                ->description($this->getDeclinedPercentageDescription($stats['declined_active'], $stats['total']) . $branchContext)
                 ->descriptionIcon('heroicon-m-x-circle')
                 ->color('danger'),
 
             // Pending Applications
             Stat::make('🟡 Pending Applications', number_format($stats['pending_active']))
-                ->description($this->getPendingDescription($stats['pending_active']))
+                ->description($this->getPendingDescription($stats['pending_active']) . $branchContext)
                 ->descriptionIcon('heroicon-m-clock')
                 ->color($stats['pending_active'] > 10 ? 'warning' : 'info'),
 
             // Expires Soon
             Stat::make('⏰ Expires Soon', number_format($stats['expires_soon']))
-                ->description($this->getExpiresSoonDescription($stats['expires_soon']))
+                ->description($this->getExpiresSoonDescription($stats['expires_soon']) . $branchContext)
                 ->descriptionIcon('heroicon-m-exclamation-triangle')
                 ->color($stats['expires_soon'] > 0 ? 'warning' : 'success'),
 
             // Expired
             Stat::make('❌ Expired', number_format($stats['expired']))
-                ->description($this->getExpiredDescription($stats['expired']))
+                ->description($this->getExpiredDescription($stats['expired']) . $branchContext)
                 ->descriptionIcon('heroicon-m-x-circle')
                 ->color($stats['expired'] > 0 ? 'danger' : 'success'),
 
             // Active Subscriptions - Based on latest subscription per member
             Stat::make('🔄 Active Subscriptions', number_format($stats['active_subscriptions']))
-                ->description('Members with valid subscriptions')
+                ->description('Members with valid subscriptions' . $branchContext)
                 ->descriptionIcon('heroicon-m-arrow-path')
                 ->color('success')
                 ->chart($this->getSubscriptionTrendChartOptimized()),
 
             // Revenue This Month - Sanitized currency display
             Stat::make('💰 Revenue This Month', $this->formatCurrency($stats['revenue_this_month']))
-                ->description('Subscription income this month')
+                ->description('Subscription income this month' . $branchContext)
                 ->descriptionIcon('heroicon-m-banknotes')
                 ->color('success'),
 
@@ -173,10 +230,24 @@ class MemberStats extends BaseWidget
             Stat::make('⚠️ Needs Attention', number_format(
                 $stats['pending_active'] + $stats['expired'] + $stats['expires_soon']
             ))
-                ->description('Pending + Expired + Expiring')
+                ->description('Pending + Expired + Expiring' . $branchContext)
                 ->descriptionIcon('heroicon-m-exclamation-triangle')
                 ->color(($stats['pending_active'] + $stats['expired'] + $stats['expires_soon']) > 5 ? 'warning' : 'gray'),
         ];
+    }
+
+    /**
+     * Get branch context for descriptions
+     */
+    private function getBranchContext(): string
+    {
+        $user = Auth::user();
+
+        if ($user->hasRole('super_admin')) {
+            return ' (All Branches)';
+        }
+
+        return '';
     }
 
     // Security and validation helper methods
@@ -307,20 +378,29 @@ class MemberStats extends BaseWidget
 
     private function getSubscriptionTrendChartOptimized(): array
     {
-        $cacheKey = 'subscription_trend_v3';
+        $branchNumber = $this->getBranchFilter();
+        $cacheKey = 'subscription_trend_v3_' . ($branchNumber ?? 'all');
 
-        return Cache::remember($cacheKey, now()->addHours(4), function () {
+        return Cache::remember($cacheKey, now()->addHours(4), function () use ($branchNumber) {
             try {
+                // Build query with branch filtering
+                $query = DB::table('subscriptions as s')
+                    ->join('members as m', 's.member_id', '=', 'm.id')
+                    ->where('s.created_at', '>=', now()->subMonths(6));
+
+                // Apply branch filter if not super_admin
+                if ($branchNumber !== null) {
+                    $query->where('m.branch_number', $branchNumber);
+                }
+
                 // Get subscription trend based on creation dates (new subscriptions per month)
-                $result = DB::table('subscriptions')
-                    ->where('created_at', '>=', now()->subMonths(6))
-                    ->selectRaw("
-                        COUNT(CASE WHEN YEAR(created_at) = ? AND MONTH(created_at) = ? THEN 1 END) as month_5,
-                        COUNT(CASE WHEN YEAR(created_at) = ? AND MONTH(created_at) = ? THEN 1 END) as month_4,
-                        COUNT(CASE WHEN YEAR(created_at) = ? AND MONTH(created_at) = ? THEN 1 END) as month_3,
-                        COUNT(CASE WHEN YEAR(created_at) = ? AND MONTH(created_at) = ? THEN 1 END) as month_2,
-                        COUNT(CASE WHEN YEAR(created_at) = ? AND MONTH(created_at) = ? THEN 1 END) as month_1,
-                        COUNT(CASE WHEN YEAR(created_at) = ? AND MONTH(created_at) = ? THEN 1 END) as current_month
+                $result = $query->selectRaw("
+                        COUNT(CASE WHEN YEAR(s.created_at) = ? AND MONTH(s.created_at) = ? THEN 1 END) as month_5,
+                        COUNT(CASE WHEN YEAR(s.created_at) = ? AND MONTH(s.created_at) = ? THEN 1 END) as month_4,
+                        COUNT(CASE WHEN YEAR(s.created_at) = ? AND MONTH(s.created_at) = ? THEN 1 END) as month_3,
+                        COUNT(CASE WHEN YEAR(s.created_at) = ? AND MONTH(s.created_at) = ? THEN 1 END) as month_2,
+                        COUNT(CASE WHEN YEAR(s.created_at) = ? AND MONTH(s.created_at) = ? THEN 1 END) as month_1,
+                        COUNT(CASE WHEN YEAR(s.created_at) = ? AND MONTH(s.created_at) = ? THEN 1 END) as current_month
                     ")
                     ->addBinding(now()->subMonths(5)->year, 'select')
                     ->addBinding(now()->subMonths(5)->month, 'select')
@@ -365,7 +445,14 @@ class MemberStats extends BaseWidget
      */
     public function clearCache(): void
     {
-        $pattern = "member_stats_v3_*";
+        $user = Auth::user();
+        $branchNumber = $user->hasRole('super_admin') ? 'all' : ($this->getBranchFilter() ?? 'no_branch');
+
+        // Clear member stats cache
+        $pattern = "member_stats_v3_*_{$branchNumber}";
         Cache::forget($pattern);
+
+        // Clear subscription trend cache
+        Cache::forget("subscription_trend_v3_{$branchNumber}");
     }
 }
