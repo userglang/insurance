@@ -1,11 +1,49 @@
+# Default Configuration
+
+# * text=auto eol=lf
+
+# *.blade.php diff=html
+# *.css diff=css
+# *.html diff=html
+# *.md diff=markdown
+# *.php diff=php
+
+# /.github export-ignore
+# CHANGELOG.md export-ignore
+# .styleci.yml export-ignore
+
+
+# Laravel Project .gitattributes
+
+# Force LF line endings for all text files
 * text=auto eol=lf
 
-*.blade.php diff=html
-*.css diff=css
-*.html diff=html
-*.md diff=markdown
-*.php diff=php
+# PHP, Blade, JS, CSS, JSON, and config files must always use LF
+*.php     text eol=lf
+*.blade.php text eol=lf
+*.js      text eol=lf
+*.css     text eol=lf
+*.scss    text eol=lf
+*.json    text eol=lf
+*.md      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.xml     text eol=lf
+*.html    text eol=lf
+*.env     text eol=lf
 
-/.github export-ignore
-CHANGELOG.md export-ignore
-.styleci.yml export-ignore
+# Keep images and binaries untouched
+*.jpg     binary
+*.jpeg    binary
+*.png     binary
+*.gif     binary
+*.ico     binary
+*.pdf     binary
+*.ttf     binary
+*.woff    binary
+*.woff2   binary
+*.eot     binary
+*.zip     binary
+
+# Ignore Composer vendor directory
+/vendor/** -text
