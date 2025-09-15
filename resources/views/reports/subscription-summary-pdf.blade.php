@@ -28,35 +28,9 @@
             <td>{{ $reportData['totalSubscriptions'] }}</td>
         </tr>
         <tr>
-            <th>Total Members</th>
-            <td>{{ $reportData['totalMembers'] }}</td>
-        </tr>
-        <tr>
             <th>Total Amount</th>
             <td>{{ number_format($reportData['totalAmount'], 2) }}</td>
         </tr>
-        <tr>
-            <th>Active</th>
-            <td>{{ $reportData['activeTotal'] ?? 0 }}</td>
-        </tr>
-    </table>
-
-    <h3>Status Counts</h3>
-    <table>
-        <thead>
-            <tr>
-                <th>Status</th>
-                <th>Count</th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach ($reportData['statusCounts'] as $status => $count)
-                <tr>
-                    <td>{{ ucfirst($status) }}</td>
-                    <td>{{ $count }}</td>
-                </tr>
-            @endforeach
-        </tbody>
     </table>
 
     <h3>Branch Stats</h3>
@@ -64,8 +38,7 @@
         <thead>
             <tr>
                 <th>Branch</th>
-                <th>Total Subs</th>
-                <th>Total Members</th>
+                <th>Total Subscription</th>
                 <th>Amount</th>
             </tr>
         </thead>
@@ -74,33 +47,33 @@
                 <tr>
                     <td>{{ $branch }}</td>
                     <td>{{ $stats['totalSubscriptions'] }}</td>
-                    <td>{{ $stats['totalMembers'] }}</td>
                     <td>{{ number_format($stats['amount'], 2) }}</td>
                 </tr>
             @endforeach
         </tbody>
     </table>
 
-    <h3>Insurance Stats</h3>
-    <table>
-        <thead>
-            <tr>
-                <th>Insurance</th>
-                <th>Total Subs</th>
-                <th>Total Members</th>
-                <th>Amount</th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach ($reportData['insuranceStats'] as $insurance => $stats)
+    {{-- ✅ Only render Insurance Stats if data exists --}}
+    @if (!empty($reportData['insuranceStats']))
+        <h3>Insurance Stats</h3>
+        <table>
+            <thead>
                 <tr>
-                    <td>{{ $insurance }}</td>
-                    <td>{{ $stats['totalSubscriptions'] }}</td>
-                    <td>{{ $stats['totalMembers'] }}</td>
-                    <td>{{ number_format($stats['amount'], 2) }}</td>
+                    <th>Insurance</th>
+                    <th>Total Subscription</th>
+                    <th>Amount</th>
                 </tr>
-            @endforeach
-        </tbody>
-    </table>
+            </thead>
+            <tbody>
+                @foreach ($reportData['insuranceStats'] as $insurance => $stats)
+                    <tr>
+                        <td>{{ $insurance }}</td>
+                        <td>{{ $stats['totalSubscriptions'] }}</td>
+                        <td>{{ number_format($stats['amount'], 2) }}</td>
+                    </tr>
+                @endforeach
+            </tbody>
+        </table>
+    @endif
 </body>
 </html>

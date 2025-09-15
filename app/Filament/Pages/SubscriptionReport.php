@@ -17,9 +17,9 @@ use Filament\Tables\Filters\Filter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Barryvdh\DomPDF\Facade\Pdf;
-use Illuminate\Support\Facades\Log;
 use Filament\Notifications\Notification;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 class SubscriptionReport extends Page implements HasTable
 {
@@ -45,33 +45,22 @@ class SubscriptionReport extends Page implements HasTable
         ]);
     }
 
-    /**
-     * Get default branch ID based on user role
-     */
     protected function getDefaultBranchId(): ?string
     {
         $user = Auth::user();
 
-        // If super_admin, default to null (all branches)
         if ($user->hasRole('super_admin')) {
             return null;
         }
 
-        // For other roles, default to their branch
         return $user->branch->branch_number ?? null;
     }
 
-    /**
-     * Check if current user is super admin
-     */
     protected function isSuperAdmin(): bool
     {
         return Auth::user()->hasRole('super_admin');
     }
 
-    /**
-     * Get user's branch number
-     */
     protected function getUserBranchNumber(): ?string
     {
         return Auth::user()->branch->branch_number ?? null;
@@ -103,24 +92,19 @@ class SubscriptionReport extends Page implements HasTable
                             ->placeholder($this->isSuperAdmin() ? 'All Branches' : 'Select Branch')
                             ->reactive()
                             ->afterStateUpdated(fn ($state) => $this->selectedBranch = $state)
-                            ->visible($this->isSuperAdmin()), // Only show branch selector for super_admin
+                            ->visible($this->isSuperAdmin()),
                     ])
-                    ->columns($this->isSuperAdmin() ? 3 : 2) // Adjust columns based on visibility
+                    ->columns($this->isSuperAdmin() ? 3 : 2)
             ])
             ->statePath('data');
     }
 
-    /**
-     * Get branch options based on user role
-     */
     protected function getBranchOptions(): array
     {
         if ($this->isSuperAdmin()) {
-            // Super admin can see all branches
             return Branch::pluck('branch_name', 'branch_number')->toArray();
         }
 
-        // Other roles can only see their own branch
         $userBranch = $this->getUserBranchNumber();
         if ($userBranch) {
             return Branch::where('branch_number', $userBranch)
@@ -141,7 +125,7 @@ class SubscriptionReport extends Page implements HasTable
                 TextColumn::make('member.branch.branch_name')
                     ->label('Branch')
                     ->sortable()
-                    ->visible($this->isSuperAdmin()), // Only show branch column for super_admin
+                    ->visible($this->isSuperAdmin()),
                 TextColumn::make('insurance.insurance_name')->label('Insurance')->sortable(),
                 TextColumn::make('amount')->label('Amount')->money('PHP')->sortable(),
                 TextColumn::make('payment_date')->label('Payment Date')->date()->sortable(),
@@ -233,7 +217,6 @@ class SubscriptionReport extends Page implements HasTable
             ->with(['member.branch', 'insurance', 'member'])
             ->whereHas('member');
 
-        // Apply role-based branch filtering
         if (!$this->isSuperAdmin()) {
             $userBranch = $this->getUserBranchNumber();
             if ($userBranch) {
@@ -242,7 +225,6 @@ class SubscriptionReport extends Page implements HasTable
                 });
             }
         } else {
-            // For super_admin, apply branch filter from form if selected
             if ($this->data['branch_id'] ?? null) {
                 $query->whereHas('member', function (Builder $q) {
                     $q->where('branch_number', $this->data['branch_id']);
@@ -250,7 +232,6 @@ class SubscriptionReport extends Page implements HasTable
             }
         }
 
-        // Apply date filters
         if ($this->data['start_date'] ?? null) {
             $query->where('payment_date', '>=', $this->data['start_date']);
         }
@@ -266,7 +247,6 @@ class SubscriptionReport extends Page implements HasTable
     {
         try {
             $maxRows = 2000;
-
             $subscriptions = $this->getTableQuery()->take($maxRows + 1)->get();
 
             if ($subscriptions->count() > $maxRows) {
@@ -278,7 +258,7 @@ class SubscriptionReport extends Page implements HasTable
                 return;
             }
 
-            $reportData = $this->generateReportData($subscriptions);
+            $reportData = $this->generateReportData($this->getTableQuery());
 
             $pdf = Pdf::loadView('reports.subscription-report-pdf', [
                 'subscriptions' => $subscriptions,
@@ -297,7 +277,6 @@ class SubscriptionReport extends Page implements HasTable
                 fn () => print($pdf->stream()),
                 $filename
             );
-
         } catch (\Exception $e) {
             Notification::make()
                 ->title('Export Failed')
@@ -320,12 +299,7 @@ class SubscriptionReport extends Page implements HasTable
             $callback = function () use ($subscriptions) {
                 $file = fopen('php://output', 'w');
 
-                // Adjust headers based on user role
-                $csvHeaders = [
-                    'CID',
-                    'Member Name',
-                ];
-
+                $csvHeaders = ['CID', 'Member Name'];
                 if ($this->isSuperAdmin()) {
                     $csvHeaders[] = 'Branch';
                 }
@@ -371,7 +345,6 @@ class SubscriptionReport extends Page implements HasTable
             };
 
             return response()->stream($callback, 200, $headers);
-
         } catch (\Exception $e) {
             Notification::make()
                 ->title('Export Failed')
@@ -384,10 +357,7 @@ class SubscriptionReport extends Page implements HasTable
     public function exportSummaryPdf()
     {
         try {
-            $maxRows = 2000;
-            $subscriptions = $this->getTableQuery()->take($maxRows)->get();
-
-            $reportData = $this->generateReportData($subscriptions);
+            $reportData = $this->generateReportData($this->getTableQuery());
 
             $pdf = Pdf::loadView('reports.subscription-summary-pdf', [
                 'reportData' => $reportData,
@@ -405,7 +375,6 @@ class SubscriptionReport extends Page implements HasTable
                 fn () => print($pdf->stream()),
                 $filename
             );
-
         } catch (\Exception $e) {
             Notification::make()
                 ->title('Export Failed')
@@ -415,9 +384,6 @@ class SubscriptionReport extends Page implements HasTable
         }
     }
 
-    /**
-     * Get branch name for report based on user role and selection
-     */
     protected function getBranchNameForReport(): string
     {
         if ($this->isSuperAdmin()) {
@@ -427,7 +393,6 @@ class SubscriptionReport extends Page implements HasTable
             return 'All Branches';
         }
 
-        // For non-super admin, show their branch
         $userBranch = $this->getUserBranchNumber();
         if ($userBranch) {
             return Branch::where('branch_number', $userBranch)->first()?->branch_name ?? 'Unknown Branch';
@@ -436,109 +401,70 @@ class SubscriptionReport extends Page implements HasTable
         return 'No Branch Assigned';
     }
 
-    protected function generateReportData($subscriptions)
+    protected function generateReportData($subscriptionsQuery)
     {
-        $totalAmount = $subscriptions->sum('amount');
-        $totalSubscriptions = $subscriptions->count();
-        $totalMembers = $subscriptions->unique('member_id')->count();
+        $totals = $subscriptionsQuery->clone()
+            ->selectRaw('SUM(amount) as totalAmount, COUNT(*) as totalSubscriptions')
+            ->first();
 
-        $statusCounts = [
-            'active' => 0,
-            'expired' => 0,
-            'future' => 0,
-            'archived' => 0,
-        ];
+        $totalMembers = $subscriptionsQuery->clone()
+            ->distinct('member_id')
+            ->count('member_id');
 
-        $branchStats = [];
-        $insuranceStats = [];
+        $statusCounts = $subscriptionsQuery->clone()
+            ->selectRaw("
+                SUM(CASE WHEN members.is_active = 0 THEN 1 ELSE 0 END) as archived,
+                SUM(CASE WHEN subscriptions.activated_at <= NOW() AND subscriptions.expires_at > NOW() AND members.is_active = 1 THEN 1 ELSE 0 END) as active,
+                SUM(CASE WHEN subscriptions.expires_at <= NOW() AND members.is_active = 1 THEN 1 ELSE 0 END) as expired,
+                SUM(CASE WHEN subscriptions.activated_at > NOW() AND members.is_active = 1 THEN 1 ELSE 0 END) as future
+            ")
+            ->join('members', 'subscriptions.member_id', '=', 'members.id')
+            ->first();
 
-        foreach ($subscriptions as $subscription) {
-            if (!$subscription->member->is_active) {
-                $status = 'archived';
-            } else {
-                $status = $subscription->status;
-
-                if (!array_key_exists($status, $statusCounts)) {
-                    $statusCounts[$status] = 0;
-                    Log::warning('Unexpected status found in subscription report', [
-                        'subscription_id' => $subscription->id,
-                        'status' => $status,
-                    ]);
-                }
-            }
-
-            $statusCounts[$status]++;
-
-            $branchName = $subscription->member->branch?->branch_name ?? 'Unknown';
-            if (!isset($branchStats[$branchName])) {
-                $branchStats[$branchName] = [
-                    'totalSubscriptions' => 0,
-                    'totalMembers' => 0,
-                    'active' => 0,
-                    'expired' => 0,
-                    'archived' => 0,
-                    'future' => 0,
-                    'amount' => 0,
-                ];
-            }
-
-            $branchStats[$branchName]['totalSubscriptions']++;
-            $branchStats[$branchName]['amount'] += $subscription->amount;
-            if (!isset($branchStats[$branchName][$status])) {
-                $branchStats[$branchName][$status] = 0;
-            }
-            $branchStats[$branchName][$status]++;
-
-            $insuranceName = $subscription->insurance?->insurance_name ?? 'Unknown';
-            if (!isset($insuranceStats[$insuranceName])) {
-                $insuranceStats[$insuranceName] = [
-                    'totalSubscriptions' => 0,
-                    'totalMembers' => 0,
-                    'active' => 0,
-                    'expired' => 0,
-                    'archived' => 0,
-                    'future' => 0,
-                    'amount' => 0,
-                ];
-            }
-
-            $insuranceStats[$insuranceName]['totalSubscriptions']++;
-            $insuranceStats[$insuranceName]['amount'] += $subscription->amount;
-            if (!isset($insuranceStats[$insuranceName][$status])) {
-                $insuranceStats[$insuranceName][$status] = 0;
-            }
-            $insuranceStats[$insuranceName][$status]++;
-        }
-
-        // Fix totalMembers per branch
-        $subscriptionsByBranch = $subscriptions->groupBy(fn($s) => $s->member->branch?->branch_name ?? 'Unknown');
-        foreach ($subscriptionsByBranch as $branchName => $branchSubs) {
-            $branchStats[$branchName]['totalMembers'] = $branchSubs->unique('member_id')->count();
-        }
-
-        // Fix totalMembers per insurance
-        $subscriptionsByInsurance = $subscriptions->groupBy(fn($s) => $s->insurance?->insurance_name ?? 'Unknown');
-        foreach ($subscriptionsByInsurance as $insuranceName => $insuranceSubs) {
-            $insuranceStats[$insuranceName]['totalMembers'] = $insuranceSubs->unique('member_id')->count();
-        }
-
-        // Calculate active + future total
-        $activeTotal = ($statusCounts['active'] ?? 0) + ($statusCounts['future'] ?? 0);
+        $branchStats = $subscriptionsQuery->clone()
+            ->join('members', 'subscriptions.member_id', '=', 'members.id')
+            ->join('branches', 'members.branch_number', '=', 'branches.branch_number')
+            ->selectRaw("
+                branches.branch_name,
+                COUNT(subscriptions.id) as totalSubscriptions,
+                COUNT(DISTINCT subscriptions.member_id) as totalMembers,
+                SUM(subscriptions.amount) as amount,
+                SUM(CASE WHEN members.is_active = 0 THEN 1 ELSE 0 END) as archived,
+                SUM(CASE WHEN subscriptions.activated_at <= NOW() AND subscriptions.expires_at > NOW() AND members.is_active = 1 THEN 1 ELSE 0 END) as active,
+                SUM(CASE WHEN subscriptions.expires_at <= NOW() AND members.is_active = 1 THEN 1 ELSE 0 END) as expired,
+                SUM(CASE WHEN subscriptions.activated_at > NOW() AND members.is_active = 1 THEN 1 ELSE 0 END) as future
+            ")
+            ->groupBy('branches.branch_name')
+            ->get()
+            ->keyBy('branch_name')
+            ->toArray();
 
         return [
-            'totalAmount' => $totalAmount,
-            'totalSubscriptions' => $totalSubscriptions,
-            'totalMembers' => $totalMembers,
-            'statusCounts' => $statusCounts,
-            'activeTotal' => $activeTotal,
-            'branchStats' => $branchStats,
-            'insuranceStats' => $insuranceStats,
+            'totalAmount'        => $totals->totalAmount ?? 0,
+            'totalSubscriptions' => $totals->totalSubscriptions ?? 0,
+            'totalMembers'       => $totalMembers,
+            'statusCounts'       => [
+                'active'   => $statusCounts->active ?? 0,
+                'expired'  => $statusCounts->expired ?? 0,
+                'future'   => $statusCounts->future ?? 0,
+                'archived' => $statusCounts->archived ?? 0,
+            ],
+            'activeTotal'  => ($statusCounts->active ?? 0) + ($statusCounts->future ?? 0),
+            'branchStats'  => $branchStats,
         ];
     }
 
     public function getReportSummary()
     {
-        $subscriptions = $this->getTableQuery()->get();
-        return $this->generateReportData($subscriptions);
+        return $this->generateReportData($this->getTableQuery());
+    }
+
+    public function applyFilters(): void
+    {
+        Notification::make()
+            ->title('Filters Applied')
+            ->body('Your report has been refreshed with the selected filters.')
+            ->success()
+            ->send();
     }
 }

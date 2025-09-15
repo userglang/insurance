@@ -2,12 +2,17 @@
 
 namespace App\Providers\Filament;
 
+use App\Filament\Pages\ChangePassword;
 use App\Filament\Pages\Reports;
 use BezhanSalleh\FilamentShield\FilamentShieldPlugin;
 use App\Filament\Pages\SubscriptionReport;
 use App\Filament\Resources\MemberResource;
 use App\Filament\Widgets\SubscriptionTable;
+use App\Http\Middleware\BusinessHoursAccess;
+use App\Http\Middleware\RequiredChangePassword;
+use App\Http\Middleware\RestrictToPhilippines;
 use Filament\Actions\Action;
+use Filament\FontProviders\GoogleFontProvider;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -34,13 +39,26 @@ class MainPanelProvider extends PanelProvider
             ->path('main')
             ->login()
             ->colors([
-                'primary' => Color::Amber,
+                'primary' => Color::Green,
+                'gray' => Color::Slate,
+                'info' => Color::Blue,
+                'success' => Color::Emerald,
+                'warning' => Color::Orange,
+                'danger' => Color::Red,
             ])
+            ->font('Inter', provider: GoogleFontProvider::class)
+            ->favicon(asset('images/favicon.ico'))
+            ->brandName('Insurance Monitoring System')
+            // ->brandLogo(asset('images/logo.svg'))
+            ->brandLogoHeight('1rem')
+            ->sidebarCollapsibleOnDesktop()
+            ->sidebarFullyCollapsibleOnDesktop()
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\\Filament\\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\\Filament\\Pages')
             ->pages([
                 Pages\Dashboard::class,
                 SubscriptionReport::class,
+                ChangePassword::class,
             ])
             ->discoverWidgets(in: app_path('Filament/Widgets'), for: 'App\\Filament\\Widgets')
             ->widgets([
@@ -64,6 +82,12 @@ class MainPanelProvider extends PanelProvider
             ])
             ->authMiddleware([
                 Authenticate::class,
-            ]);
+                RequiredChangePassword::class,
+                BusinessHoursAccess::class,
+                RestrictToPhilippines::class,
+                // 'required.password.change',
+            ])
+            ->spa()
+            ->unsavedChangesAlerts();
     }
 }

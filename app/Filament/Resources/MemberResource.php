@@ -7,6 +7,7 @@ use App\Models\Branch;
 use App\Models\Member;
 use App\Jobs\ProcessBulkMemberOperation;
 use App\Services\MemberExportService;
+use App\Services\MemberStatusService;
 use Filament\Forms;
 use Filament\Forms\Components\Wizard;
 use Filament\Forms\Form;
@@ -22,6 +23,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use League\Csv\Writer;
+use App\Services\StatusService;
 
 class MemberResource extends Resource
 {
@@ -79,6 +81,7 @@ class MemberResource extends Resource
     {
         $query = parent::getGlobalSearchEloquentQuery()
             ->select(['id', 'cid', 'first_name', 'last_name', 'branch_number', 'is_active'])
+            ->where('is_active', true)
             ->orderBy('is_active', 'desc')
             ->with('branch:id,branch_number,branch_name');
 
@@ -470,7 +473,8 @@ class MemberResource extends Resource
                     ->badge()
                     ->color('gray')
                     ->searchable()
-                    ->sortable(),
+                    ->sortable()
+                    ->placeholder('Unknown'),
 
                 Tables\Columns\TextColumn::make('full_name')
                     ->label('Member Name')
@@ -478,22 +482,10 @@ class MemberResource extends Resource
                     ->sortable(['first_name', 'last_name'])
                     ->limit(30),
 
-                Tables\Columns\TextColumn::make('status')
-                    ->label('Status')
-                    ->badge()
-                    ->color(fn (string $state): string => match ($state) {
-                        'accepted' => 'success',
-                        'pending' => 'warning',
-                        'declined' => 'danger',
-                        default => 'gray',
-                    })
-                    ->formatStateUsing(fn (string $state) => ucfirst($state))
-                    ->toggleable(isToggledHiddenByDefault: true)
-                    ->sortable(),
-
                 Tables\Columns\TextColumn::make('subscriptions.expires_at')
                     ->label('Expiration Date')
                     ->date('M j, Y')
+                    ->placeholder('Archived')
                     ->getStateUsing(fn ($record) =>
                     $record->subscriptions->sortByDesc('expires_at')->first()?->expires_at
                     )
@@ -702,32 +694,19 @@ class MemberResource extends Resource
                         ->label(fn (Model $record): string =>
                             Auth::user()->hasRole('super_admin') ?
                             ($record->is_active ? 'Deactivate' : 'Activate') :
-                            'Deactivate' // For non-super-admins, always show "Deactivate"
+                            'Deactivate'
                         )
                         ->icon(fn (Model $record): string =>
                             Auth::user()->hasRole('super_admin') ?
                             ($record->is_active ? 'heroicon-o-x-circle' : 'heroicon-o-check-circle') :
-                            'heroicon-o-x-circle' // For non-super-admins, show only the deactivate icon
+                            'heroicon-o-x-circle'
                         )
                         ->color(fn (Model $record): string =>
                             $record->is_active ? 'danger' : 'success'
                         )
                         ->requiresConfirmation()
                         ->action(function (Model $record) {
-                            try {
-                                // Only super_admin can activate/deactivate, so we don't need additional checks here
-                                $record->update(['is_active' => !$record->is_active]);
-                                Notification::make()
-                                    ->success()
-                                    ->title('Status Updated')
-                                    ->send();
-                            } catch (\Exception $e) {
-                                Notification::make()
-                                    ->danger()
-                                    ->title('Error updating status')
-                                    ->body('Please try again.')
-                                    ->send();
-                            }
+                            app(StatusService::class)->toggle($record, Auth::user());
                         }),
 
                     Tables\Actions\Action::make('accept')
@@ -739,18 +718,7 @@ class MemberResource extends Resource
                             $record->is_active && in_array($record->status, ['pending', 'declined'])
                         )
                         ->action(function (Model $record) {
-                            try {
-                                $record->update(['status' => 'accepted']);
-                                Notification::make()
-                                    ->success()
-                                    ->title('Member Accepted')
-                                    ->send();
-                            } catch (\Exception $e) {
-                                Notification::make()
-                                    ->danger()
-                                    ->title('Error accepting member')
-                                    ->send();
-                            }
+                            app(MemberStatusService::class)->accept($record);
                         }),
                 ])
                     ->label('Actions')

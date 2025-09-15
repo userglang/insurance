@@ -69,13 +69,13 @@ class ListMembers extends ListRecords
                             ->danger()
                             ->body('An unexpected error occurred during import.')
                             ->send();
-
                         Log::error('Voucher CSV Import Error: ' . $e->getMessage());
                     }
                 })
                 ->modalHeading('Upload Voucher CSV')
                 ->modalButton('Upload')
-                ->color('primary'),
+                ->color('primary')
+                ->visible(fn () => Auth::user()?->hasRole('super_admin')),
             Actions\CreateAction::make()
                 ->label('Register')
                 ->icon('heroicon-o-plus'),
@@ -96,9 +96,8 @@ class ListMembers extends ListRecords
                         ->disk('local')
                         ->directory('subscription')
                         ->acceptedFileTypes(['text/csv', 'application/csv'])
-                        ->maxSize(10) // MB
                         ->hint('CSV file only (max 10MB)')
-                        ->rules(['file', 'mimes:csv', 'max:10240'])
+                        ->rules(['file', 'mimes:csv'])
                 ])
                 ->modalHeading('Upload Member Subscriptions')
                 ->modalSubmitActionLabel('Upload File')

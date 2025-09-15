@@ -115,10 +115,6 @@
     </thead>
     <tbody>
         <tr>
-            <td>Total Members</td>
-            <td>{{ number_format($reportData['totalMembers']) }}</td>
-        </tr>
-        <tr>
             <td>Total Subscriptions</td>
             <td>{{ number_format($reportData['totalSubscriptions']) }}</td>
         </tr>
@@ -126,21 +122,6 @@
             <td>Total Amount</td>
             <td><b>P</b> {{ number_format($reportData['totalAmount'], 2) }}</td>
         </tr>
-        <tr>
-            <td>Active</td>
-            <td>{{ number_format($reportData['statusCounts']['active']) }}</td>
-        </tr>
-        <tr>
-            <td>Future</td>
-            <td>{{ number_format($reportData['statusCounts']['future']) }}</td>
-        </tr>
-        <tr>
-            <td>Expired</td>
-            <td>{{ number_format($reportData['statusCounts']['expired']) }}</td>
-        </tr>
-        <tr>
-            <td>Archived</td>
-            <td>{{ number_format($reportData['statusCounts']['archived']) }}</td>
         </tr>
     </tbody>
 </table>
@@ -153,11 +134,6 @@
         <tr>
             <th>Branch</th>
             <th>Total Subscriptions</th>
-            <th>Total Members</th>
-            <th>Active</th>
-            <th>Future</th>
-            <th>Expired</th>
-            <th>Archived</th>
             <th>Total Amount</th>
         </tr>
         </thead>
@@ -165,12 +141,7 @@
         @foreach($reportData['branchStats'] as $branch => $stats)
             <tr>
                 <td>{{ $branch }}</td>
-                <td>{{ number_format($stats['totalSubscriptions']) }}</td>
                 <td>{{ number_format($stats['totalMembers']) }}</td>
-                <td>{{ number_format($stats['active']) }}</td>
-                <td>{{ number_format($stats['future'] ?? 0) }}</td>
-                <td>{{ number_format($stats['expired']) }}</td>
-                <td>{{ number_format($stats['archived']) }}</td>
                 <td><b>P</b> {{ number_format($stats['amount'], 2) }}</td>
             </tr>
         @endforeach
@@ -178,38 +149,6 @@
     </table>
 @endif
 
-{{-- Insurance Statistics --}}
-@if(count($reportData['insuranceStats']) > 0)
-    <div class="section-title">Insurance Statistics</div>
-    <table>
-        <thead>
-        <tr>
-            <th>Insurance Type</th>
-            <th>Total Subscriptions</th>
-            <th>Total Members</th>
-            <th>Active</th>
-            <th>Future</th>
-            <th>Expired</th>
-            <th>Archived</th>
-            <th>Total Amount</th>
-        </tr>
-        </thead>
-        <tbody>
-        @foreach($reportData['insuranceStats'] as $insurance => $stats)
-            <tr>
-                <td>{{ $insurance }}</td>
-                <td>{{ number_format($stats['totalSubscriptions']) }}</td>
-                <td>{{ number_format($stats['totalMembers']) }}</td>
-                <td>{{ number_format($stats['active']) }}</td>
-                <td>{{ number_format($stats['future'] ?? 0) }}</td>
-                <td>{{ number_format($stats['expired']) }}</td>
-                <td>{{ number_format($stats['archived']) }}</td>
-                <td><b>P</b> {{ number_format($stats['amount'], 2) }}</td>
-            </tr>
-        @endforeach
-        </tbody>
-    </table>
-@endif
 
 {{-- Detailed Subscription List --}}
 <div class="page-break"></div>

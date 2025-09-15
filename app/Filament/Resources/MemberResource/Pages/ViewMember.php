@@ -49,7 +49,8 @@ class ViewMember extends Page
                 ->label('Edit Profile')
                 ->url(fn () => route('filament.main.resources.members.edit', $this->record))
                 ->icon('heroicon-o-pencil-square')
-                ->color('primary'),
+                ->color('primary')
+                ->disabled(fn () => ! $this->record->is_active), // Disable if inactive
 
             Actions\Action::make('download_pdf')
                 ->label('Print Profile')
@@ -57,8 +58,8 @@ class ViewMember extends Page
                 ->icon('heroicon-o-printer')
                 ->url(fn () => route('member.print', $this->record))
                 ->openUrlInNewTab()
-                ->requiresConfirmation(),
-
+                ->requiresConfirmation()
+                ->disabled(fn () => ! $this->record->is_active), // Disable if inactive
         ];
     }
 }

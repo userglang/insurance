@@ -101,18 +101,20 @@
     </div>
 
     {{-- ✅ Subscriptions Relation Manager --}}
-    <x-filament::section>
-        <x-slot name="header">Subscriptions</x-slot>
+    @if($record->is_active)
+        <x-filament::section>
+            <x-slot name="header">Subscriptions</x-slot>
 
-        @livewire(
-            \App\Filament\Resources\MemberResource\RelationManagers\SubscriptionsRelationManager::class,
-            [
-                'ownerRecord' => $record,
-                'pageClass' => \App\Filament\Resources\MemberResource\Pages\ViewMember::class,
-            ],
-            key('subscriptions-' . $record->getKey())
-        )
-    </x-filament::section>
+            @livewire(
+                \App\Filament\Resources\MemberResource\RelationManagers\SubscriptionsRelationManager::class,
+                [
+                    'ownerRecord' => $record,
+                    'pageClass' => \App\Filament\Resources\MemberResource\Pages\ViewMember::class,
+                ],
+                key('subscriptions-' . $record->getKey())
+            )
+        </x-filament::section>
+    @endif
 
     {{-- @endcan --}}
 </x-filament::page>

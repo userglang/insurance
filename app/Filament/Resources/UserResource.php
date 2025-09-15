@@ -5,6 +5,7 @@ namespace App\Filament\Resources;
 use App\Filament\Resources\UserResource\Pages;
 use App\Models\User;
 use App\Models\Branch;
+use App\Services\ResetPasswordService;
 use Filament\Forms;
 use Filament\Resources\Resource;
 use Filament\Tables;
@@ -220,11 +221,16 @@ class UserResource extends Resource
                             ->modalHeading('Reset Password')
                             ->modalDescription('Are you sure you want to reset the password for this user? It will be set to the default: password123.')
                             ->modalSubmitActionLabel('Yes, reset')
-                            // ->visible(fn ($record) => Auth::user()->can('update_user', $record))
-                            ->action(function ($record) {
-                                $record->update([
-                                    'password' => Hash::make('password123'),
-                                ]);
+                            ->action(function ($record, ResetPasswordService $resetPasswordService) {
+                                // Laravel automatically injects ResetPasswordService into this method
+                                $resetPasswordService->reset($record);
+
+                                // Success notification
+                                Notification::make()
+                                    ->success()
+                                    ->title('Password Reset')
+                                    ->body('The password has been reset to the default: password123.')
+                                    ->send();
                             })
                             ->successNotification(
                                 Notification::make()
