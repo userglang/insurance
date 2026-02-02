@@ -12,11 +12,13 @@ use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Support\Enums\FontWeight;
 use Filament\Tables;
 use Filament\Forms;
+use Filament\Notifications\Notification;
 use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Response;
 
 class SubscriptionsRelationManager extends RelationManager
@@ -209,10 +211,37 @@ class SubscriptionsRelationManager extends RelationManager
                 Tables\Actions\CreateAction::make()
                     ->label('Add Subscription')
                     ->icon('heroicon-o-plus-circle')
+                    ->before(function (RelationManager $livewire, Tables\Actions\CreateAction $action) {
+                        // Get the member's ID from the livewire record
+                        $memberId = $livewire->getOwnerRecord()->id;
+
+                        // Check if the member already has an active subscription
+                        $hasActiveSubscription = Subscription::query()
+                            ->where('member_id', $memberId)
+                            ->where('expires_at', '>=', now())
+                            ->exists();
+
+                        // If an active subscription exists, show a notification and halt the action
+                        if ($hasActiveSubscription) {
+                            Notification::make()
+                                ->title('Error')
+                                ->body('This member already has an active subscription. A new subscription cannot be created.')
+                                ->danger()
+                                ->send();
+
+                            // Halt the action to prevent the form from opening and creation from proceeding
+                            $action->halt();
+                            $action->cancel();
+                        }
+                    })
                     ->mutateFormDataUsing(function (array $data, RelationManager $livewire) {
+                        // Get the member's ID from the livewire record
+                        $memberId = $livewire->getOwnerRecord()->id;
+
+                        // If product_account_id is 0, create a CASH product account
                         if ($data['product_account_id'] === '0') {
                             $cashAccount = ProductAccount::create([
-                                'member_id' => $livewire->getOwnerRecord()->id,
+                                'member_id' => $memberId,
                                 'product_name' => 'CASH',
                                 'account_number' => '0',
                             ]);
@@ -220,6 +249,7 @@ class SubscriptionsRelationManager extends RelationManager
                             $data['product_account_id'] = $cashAccount->id;
                         }
 
+                        // Return the mutated data for subscription creation
                         return $data;
                     }),
                 Tables\Actions\Action::make('download_pdf')
@@ -242,6 +272,15 @@ class SubscriptionsRelationManager extends RelationManager
                         ->label('Edit')
                         ->icon('heroicon-m-pencil-square')
                         ->color('warning'),
+                    Tables\Actions\DeleteAction::make()
+                        ->label('Delete')
+                        ->icon('heroicon-m-trash')
+                        ->color('danger')
+                        ->visible(fn (Model $record): bool => Auth::user()->hasRole('super_admin'))  // Only visible to super_admin
+                        ->action(function (Model $record) {
+                            // Custom delete logic (if needed)
+                            $record->delete();
+                        }),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([

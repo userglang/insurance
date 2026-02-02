@@ -20,7 +20,9 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\SoftDeletingScope;
 use Filament\Support\Enums\FontWeight;
 use Filament\Tables\Enums\FiltersLayout;
-use Illuminate\Container\Attributes\Auth;
+use Illuminate\Support\Facades\Auth;  // Corrected import
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class SubscriptionResource extends Resource
@@ -35,8 +37,28 @@ class SubscriptionResource extends Resource
 
     public static function getNavigationBadge(): ?string
     {
-        return static::getModel()::active()->count();
+        $user = Auth::user();  // Corrected usage
+
+        if ($user && !$user->hasRole('super_admin')) {
+            // Cache the count of active subscriptions for the same branch
+            $cacheKey = 'subscriptions_count_branch_' . $user->branch->branch_number;
+
+            return Cache::remember($cacheKey, now()->addMinutes(10), function () use ($user) {
+                return Subscription::join('members', 'subscriptions.member_id', '=', 'members.id')
+                    ->where('members.branch_number', $user->branch->branch_number)
+                    ->active() // Count only active subscriptions
+                    ->count();
+            });
+        }
+
+        // If the user is a super_admin, cache the count of all active subscriptions
+        $cacheKey = 'subscriptions_count_all_active';
+
+        return Cache::remember($cacheKey, now()->addMinutes(10), function () {
+            return Subscription::active()->count();
+        });
     }
+
 
     public static function getNavigationBadgeColor(): ?string
     {
@@ -80,6 +102,8 @@ class SubscriptionResource extends Resource
                                 ->label('Subscription Date')
                                 ->required()
                                 ->default(now())
+                                ->maxDate(now()->addDays(60)) // Allow future activation up to 30 days
+                                ->minDate(now()->subDays(60))
                                 ->displayFormat('M j, Y')
                                 ->columnSpan(1),
 
@@ -90,15 +114,18 @@ class SubscriptionResource extends Resource
                                 ->prefix('₱')
                                 ->minValue(1)
                                 ->step(0.01)
-                                ->default(160.00)
+                                ->default(180.00)
                                 ->columnSpan(1),
 
                             Forms\Components\DatePicker::make('payment_date')
                                 ->label('Payment Date')
                                 ->required()
                                 ->default(now())
+                                ->maxDate(now()->addDays(60))
+                                ->minDate(now()->subDays(60))
                                 ->displayFormat('M j, Y')
                                 ->columnSpan(1),
+
                         ]),
                 ])
         ];
@@ -199,14 +226,26 @@ class SubscriptionResource extends Resource
             ->columns([
                 Tables\Columns\TextColumn::make('member.full_name')
                     ->label('Member Name')
-                    ->searchable()
-                    ->sortable()
+                    ->searchable(['first_name', 'last_name', 'middle_name'])
+                    // ->sortable('member.last_name')
                     ->weight(FontWeight::Medium),
+
+                Tables\Columns\TextColumn::make('member.branch.branch_name')
+                    ->label('Branch')
+                    ->sortable()
+                    ->alignCenter(),
+
+                Tables\Columns\TextColumn::make('member.age')
+                    ->label('Age')
+                    ->sortable()
+                    ->suffix(' yrs old')
+                    ->alignCenter(),
 
                 Tables\Columns\TextColumn::make('insurance.insurance_name')
                     ->label('Insurance')
                     ->searchable()
                     ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true)
                     ->wrap(),
 
                 Tables\Columns\TextColumn::make('productAccount.product_name')
@@ -294,6 +333,26 @@ class SubscriptionResource extends Resource
                     ->relationship('insurance', 'insurance_name')
                     ->searchable()
                     ->preload(),
+                Filter::make('duplicates')
+                    ->label('Members with Duplicate Active Subscriptions')
+                    ->query(function (Builder $query): Builder {
+                        return $query->whereIn('id', function ($subquery) {
+                            $subquery->selectRaw('id')
+                                ->fromRaw('(
+                                    SELECT
+                                        id,
+                                        member_id,
+                                        ROW_NUMBER() OVER (PARTITION BY member_id ORDER BY expires_at DESC) as rn,
+                                        COUNT(*) OVER (PARTITION BY member_id) as subscription_count
+                                    FROM subscriptions
+                                    WHERE expires_at > ?
+                                ) as ranked_subscriptions', [now()])
+                                ->whereRaw('rn = 1 AND subscription_count > 1');
+                        });
+                    })
+                    ->default(true)
+                    ->toggle(true),
+
             ])
             ->actions([
                 Tables\Actions\ActionGroup::make([
@@ -322,7 +381,19 @@ class SubscriptionResource extends Resource
             ->poll('30s') // Auto-refresh every 30 seconds
             ->striped()
             ->persistFiltersInSession()
-            ->persistSortInSession();
+            ->persistSortInSession()
+
+            ->emptyStateHeading('No subscription found')
+            ->emptyStateDescription('Get started by adding your first subscription.')
+            ->emptyStateIcon('heroicon-o-users')
+            ->persistSearchInSession()
+            ->paginated([10,25,50])
+            ->defaultPaginationPageOption(10)
+            ->deferLoading()
+            ->searchOnBlur()
+            ->searchDebounce('750ms')
+            // Disable polling for large datasets
+            ->poll(null);
     }
 
     public static function getRelations(): array

@@ -75,16 +75,28 @@ class SubscriptionReport extends Page implements HasTable
                         DatePicker::make('start_date')
                             ->label('Start Date')
                             ->default(now()->startOfMonth())
+                            ->native(true)
                             ->required()
                             ->reactive()
-                            ->afterStateUpdated(fn ($state) => $this->startDate = $state),
+                            ->afterStateUpdated(fn ($state) => $this->startDate = $state)
+                            ->helperText('Format: DD/MM/YYYY.'),
 
                         DatePicker::make('end_date')
                             ->label('End Date')
                             ->default(now()->endOfMonth())
+                            ->native(true)
                             ->required()
                             ->reactive()
-                            ->afterStateUpdated(fn ($state) => $this->endDate = $state),
+                            ->afterStateUpdated(function ($state) {
+                                $this->endDate = $state;
+
+                                // Ensure that the end date is greater than or equal to the start date
+                                if ($this->startDate && $state && $state < $this->startDate) {
+                                    // Show a validation error or update helper text if end date is before start date
+                                    session()->flash('error', 'End Date should be greater than or equal to Start Date.');
+                                }
+                            })
+                            ->helperText('Format: DD/MM/YYYY. End date must be after or the same as the start date.'),
 
                         Select::make('branch_id')
                             ->label('Branch')
@@ -120,18 +132,22 @@ class SubscriptionReport extends Page implements HasTable
         return $table
             ->query($this->getTableQuery())
             ->columns([
-                TextColumn::make('member.cid')->label('CID')->sortable()->searchable(),
+                TextColumn::make('member.cid')->label('CID')->sortable()->searchable()
+                    ->toggleable(isToggledHiddenByDefault: true)
+                    ->placeholder('Unknown'),
                 TextColumn::make('member.full_name')->label('Member Name')->sortable()->searchable(),
                 TextColumn::make('member.branch.branch_name')
                     ->label('Branch')
                     ->sortable()
                     ->visible($this->isSuperAdmin()),
-                TextColumn::make('insurance.insurance_name')->label('Insurance')->sortable(),
+                TextColumn::make('insurance.insurance_name')->label('Insurance')->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('amount')->label('Amount')->money('PHP')->sortable(),
                 TextColumn::make('payment_date')->label('Payment Date')->date()->sortable(),
                 TextColumn::make('activated_at')->label('Activated')->date()->sortable(),
                 TextColumn::make('expires_at')->label('Expires')->date()->sortable(),
                 TextColumn::make('status')
+                    ->toggleable(isToggledHiddenByDefault: true)
                     ->label('Status')
                     ->badge()
                     ->color(function (string $state, $column) {
@@ -217,27 +233,28 @@ class SubscriptionReport extends Page implements HasTable
             ->with(['member.branch', 'insurance', 'member'])
             ->whereHas('member');
 
+        // Check branch filter based on user role
+        $branchNumber = null;
         if (!$this->isSuperAdmin()) {
-            $userBranch = $this->getUserBranchNumber();
-            if ($userBranch) {
-                $query->whereHas('member', function (Builder $q) use ($userBranch) {
-                    $q->where('branch_number', $userBranch);
-                });
-            }
-        } else {
-            if ($this->data['branch_id'] ?? null) {
-                $query->whereHas('member', function (Builder $q) {
-                    $q->where('branch_number', $this->data['branch_id']);
-                });
-            }
+            $branchNumber = $this->getUserBranchNumber();
+        } elseif ($this->data['branch_id'] ?? null) {
+            $branchNumber = $this->data['branch_id'];
         }
 
-        if ($this->data['start_date'] ?? null) {
-            $query->where('payment_date', '>=', $this->data['start_date']);
+        // Apply branch filter if applicable
+        if ($branchNumber) {
+            $query->whereHas('member', function (Builder $q) use ($branchNumber) {
+                $q->where('branch_number', $branchNumber);
+            });
         }
 
-        if ($this->data['end_date'] ?? null) {
-            $query->where('payment_date', '<=', $this->data['end_date']);
+        // Apply date filters if available
+        if ($startDate = $this->data['start_date'] ?? null) {
+            $query->where('payment_date', '>=', $startDate);
+        }
+
+        if ($endDate = $this->data['end_date'] ?? null) {
+            $query->where('payment_date', '<=', $endDate);
         }
 
         return $query;
@@ -291,52 +308,59 @@ class SubscriptionReport extends Page implements HasTable
         try {
             $subscriptions = $this->getTableQuery()->get();
 
+            $subscriptions = $subscriptions->sortBy(function ($subscription) {
+                return $subscription->member->last_name; // Assuming last_name exists on member
+            });
+
             $headers = [
                 'Content-Type' => 'text/csv',
-                'Content-Disposition' => 'attachment; filename="subscription-report-' . now()->format('Y-m-d') . '.csv"',
+                'Content-Disposition' => 'attachment; filename="subscription-report-' . now()->format('Y-m-d') . '.csv"'
             ];
 
             $callback = function () use ($subscriptions) {
                 $file = fopen('php://output', 'w');
 
-                $csvHeaders = ['CID', 'Member Name'];
-                if ($this->isSuperAdmin()) {
-                    $csvHeaders[] = 'Branch';
-                }
-
-                $csvHeaders = array_merge($csvHeaders, [
-                    'Insurance',
-                    'Amount',
-                    'Payment Date',
-                    'Activated Date',
-                    'Expires Date',
-                    'Status',
-                ]);
-
+                // Define CSV headers
+                $csvHeaders = [
+                    'ID', 'CID', 'Member Name', 'Branch', 'Email', 'Phone', 'Address', 'Age', 'Gender', 'Marital Status',
+                    'Occupation', 'Joined Date', 'Insurance', 'Status', 'Account Name', 'Account Number', 'Amount',
+                    'Payment Date', 'Expires Date', 'Activated Date', 'Note: Date Format'
+                ];
                 fputcsv($file, $csvHeaders);
 
+                // Prepare member and subscription data for each row
                 foreach ($subscriptions as $subscription) {
-                    $status = $subscription->member->is_active ?? true
+                    $member = $subscription->member;
+                    $productAccount = $subscription->productAccount;
+
+                    $status = $member->is_active ?? true
                         ? $subscription->status
                         : 'archived';
 
+                    // Row data preparation
                     $row = [
-                        $subscription->member->cid,
-                        $subscription->member->full_name,
-                    ];
-
-                    if ($this->isSuperAdmin()) {
-                        $row[] = $subscription->member->branch?->branch_name;
-                    }
-
-                    $row = array_merge($row, [
+                        $member->id,
+                        $member->cid,
+                        $member->full_name,
+                        $member->branch?->branch_name,
+                        $member->email,
+                        $member->contact_number,
+                        $member->full_address,
+                        $member->age,
+                        $member->gender_label,
+                        $member->marital_status_label,
+                        $member->occupation,
+                        $member->created_at->format('m/d/Y'),
                         $subscription->insurance?->insurance_name,
-                        $subscription->amount,
-                        $subscription->payment_date?->format('Y-m-d'),
-                        $subscription->activated_at?->format('Y-m-d'),
-                        $subscription->expires_at?->format('Y-m-d'),
                         $status,
-                    ]);
+                        $productAccount?->product_name,
+                        $productAccount?->account_number,
+                        $subscription->amount,
+                        $subscription->payment_date?->format('m/d/Y'),
+                        $subscription->expires_at?->format('m/d/Y'),
+                        $subscription->activated_at?->format('m/d/Y'),
+                        'month/day/Year (12/18/2025)', // Static date format note
+                    ];
 
                     fputcsv($file, $row);
                 }
@@ -348,11 +372,12 @@ class SubscriptionReport extends Page implements HasTable
         } catch (\Exception $e) {
             Notification::make()
                 ->title('Export Failed')
-                ->body('Failed to generate Excel report: ' . $e->getMessage())
+                ->body('Failed to generate CSV report: ' . $e->getMessage())
                 ->danger()
                 ->send();
         }
     }
+
 
     public function exportSummaryPdf()
     {

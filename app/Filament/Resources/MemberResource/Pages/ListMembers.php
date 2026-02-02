@@ -80,7 +80,7 @@ class ListMembers extends ListRecords
                 ->label('Register')
                 ->icon('heroicon-o-plus'),
             Actions\Action::make('create')
-                ->label('Upload Member Subscription')
+                ->label('Upload Renewal Subscription')
                 ->icon('heroicon-o-cloud-arrow-up')
                 ->form([
                     Select::make('insurance_id')
@@ -205,8 +205,8 @@ class ListMembers extends ListRecords
                 'members.created_at',
                 'members.is_active',
             ])
-            ->with([
-                'branch:id,branch_number,branch_name'
+            ->withOnly([
+                'branch:id,branch_number,branch_name' // Use `withOnly` in Laravel 10+ to avoid loading unnecessary relations
             ]);
 
         $user = Auth::user();
@@ -222,7 +222,7 @@ class ListMembers extends ListRecords
 
         // Apply the 'is_active' condition only for super_admin
         if ($user && !$user->hasRole('super_admin')) {
-            $query->where('members.is_active', '=', true);
+            // $query->where('members.is_active', '=', true);
         }
 
         return $query;

@@ -30,38 +30,38 @@
         @endphp
 
         <div class="flex gap-6">
-    <div class="flex-1 bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-        <div class="text-sm text-gray-600 dark:text-gray-400">Total Subscriptions</div>
-        <div class="text-2xl font-bold text-black dark:text-white">
-            {{ number_format($summary['totalSubscriptions']) }}
-        </div>
-        <div class="text-xs text-gray-400">Across all members</div>
-    </div>
+            <div class="flex-1 bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+                <div class="text-sm text-gray-600 dark:text-gray-400">Total Subscriptions</div>
+                <div class="text-2xl font-bold text-black dark:text-white">
+                    {{ number_format($summary['totalSubscriptions']) }}
+                </div>
+                <div class="text-xs text-gray-400">Across all members</div>
+            </div>
 
-    <div class="flex-1 bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-        <div class="text-sm text-gray-600 dark:text-gray-400">Total Amount</div>
-        <div class="text-2xl font-bold text-black dark:text-white">
-            ₱{{ number_format($summary['totalAmount'], 2) }}
-        </div>
-        <div class="text-xs text-gray-400">Total revenue</div>
-    </div>
+            <div class="flex-1 bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+                <div class="text-sm text-gray-600 dark:text-gray-400">Total Amount</div>
+                <div class="text-2xl font-bold text-black dark:text-white">
+                    ₱{{ number_format($summary['totalAmount'], 2) }}
+                </div>
+                <div class="text-xs text-gray-400">Total revenue</div>
+            </div>
 
-    {{-- <div class="flex-1 bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-        <div class="text-sm text-gray-600 dark:text-gray-400">Active</div>
-        <div class="text-2xl font-bold text-green-600 dark:text-green-400">
-            {{ number_format($summary['statusCounts']['active']) }}
-        </div>
-        <div class="text-xs text-green-500">Currently active</div>
-    </div>
+            {{-- <div class="flex-1 bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+                <div class="text-sm text-gray-600 dark:text-gray-400">Active</div>
+                <div class="text-2xl font-bold text-green-600 dark:text-green-400">
+                    {{ number_format($summary['statusCounts']['active']) }}
+                </div>
+                <div class="text-xs text-green-500">Currently active</div>
+            </div>
 
-    <div class="flex-1 bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-        <div class="text-sm text-gray-600 dark:text-gray-400">Expired</div>
-        <div class="text-2xl font-bold text-red-600 dark:text-red-400">
-            {{ number_format($summary['statusCounts']['expired']) }}
+            <div class="flex-1 bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+                <div class="text-sm text-gray-600 dark:text-gray-400">Expired</div>
+                <div class="text-2xl font-bold text-red-600 dark:text-red-400">
+                    {{ number_format($summary['statusCounts']['expired']) }}
+                </div>
+                <div class="text-xs text-red-500">Already expired</div>
+            </div> --}}
         </div>
-        <div class="text-xs text-red-500">Already expired</div>
-    </div> --}}
-</div>
 
         {{-- Branch Statistics Table --}}
         @if(count($summary['branchStats']) > 0)

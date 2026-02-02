@@ -80,37 +80,75 @@ class MemberResource extends Resource
     public static function getGlobalSearchEloquentQuery(): Builder
     {
         $query = parent::getGlobalSearchEloquentQuery()
+            // Select only necessary columns for performance
             ->select(['id', 'cid', 'first_name', 'last_name', 'branch_number', 'is_active'])
-            ->where('is_active', true)
-            ->orderBy('is_active', 'desc')
-            ->with('branch:id,branch_number,branch_name');
 
-        // Apply role-based filtering for global search
+            // Order by is_active so that the most active members are on top
+            ->orderByDesc('is_active', `last_name`)
+
+            // Eager load only necessary relations, avoid large or unneeded data
+            ->with([
+                'branch:id,branch_number,branch_name',
+                'subscriptions' => function ($query) {
+                    $query->select(['id', 'member_id', 'expires_at'])
+                        ->orderByDesc('expires_at') // Most recent first
+                        ->limit(1);  // We only need the latest subscription
+                }
+            ]);
+
+        // Fetch the authenticated user to apply role-based filtering
         $user = Auth::user();
-        if ($user && !$user->hasRole('super_admin')) {
-            if ($user->branch->branch_number) {
-                $query->where('branch_number', $user->branch->branch_number);
-            } else {
-                // If user has no branch assigned and isn't super admin, return empty results
-                $query->whereRaw('1 = 0');
+        if ($user) {
+            // If the user is not a super admin, apply branch filtering
+            if (!$user->hasRole('super_admin')) {
+                if ($user->branch && $user->branch->branch_number) {
+                    // Filter records based on the user's branch number
+                    $query->where('branch_number', $user->branch->branch_number);
+                } else {
+                    // If no branch is assigned, prevent showing results
+                    $query->whereNull('branch_number');
+                }
+
+                // Apply 'is_active' filter only for non-super admins
+                $query->where('is_active', true);
             }
         }
 
-        return $query;
+        // Limit the query to 5 records, but return whatever is available (fewer than 5 is fine)
+        return $query->limit(1);
     }
 
     public static function getGlobalSearchResultTitle(Model $record): string
     {
-        return $record->full_name;
+        return $record->last_name . ', ' . $record->first_name;
     }
 
     public static function getGlobalSearchResultDetails(Model $record): array
     {
+        // Get the latest subscription, if exists
+        $latestSubscription = $record->subscriptions->first();
+        $expiresAt = $latestSubscription?->expires_at;
+
+        // Determine the subscription expiration status
+        $expirationStatus = 'No subscription';
+        if ($expiresAt) {
+            if ($expiresAt->isPast()) {
+                $expirationStatus = $expiresAt->format('M j, Y') . ' (Expired)';
+            } elseif ($expiresAt->lt(now()->addDays(30))) {
+                $expirationStatus = $expiresAt->format('M j, Y') . ' (Expires soon)';
+            } else {
+                $expirationStatus = $expiresAt->format('M j, Y') . ' (Active)';
+            }
+        }
+
+        // Return key-value pair for the record details to be shown in search results
         return [
             __('Branch') => $record->branch?->branch_name ?? 'N/A',
-            __('Status') => $record->is_active ? 'Active' : 'Inactive',
+            __('Expires At') => $expirationStatus,
+            __('Status') => $record->is_active ? 'Active' : 'Archived/Deceased',
         ];
     }
+
 
     public static function getGlobalSearchResultUrl(Model $record): string
     {
@@ -237,6 +275,7 @@ class MemberResource extends Resource
                                 ->displayFormat('F j, Y')
                                 ->format('Y-m-d')
                                 ->maxDate(now()->subYears(18))
+                                ->minDate(now()->subYears(100))
                                 ->beforeOrEqual('today')
                                 ->helperText('Must be at least 18 years old'),
                         ]),
@@ -296,9 +335,9 @@ class MemberResource extends Resource
 
                             Forms\Components\TextInput::make('contact_number')
                                 ->label('Contact Number')
-                                ->placeholder('+63 912 345 6789')
+                                ->placeholder('0912 345 6789')
                                 ->maxLength(20)
-                                ->tel()
+                                ->mask('9999 999 9999')
                                 ->suffixIcon('heroicon-m-phone')
                                 ->rule('regex:/^[\+]?[0-9\s\-\(\)]{7,20}$/')
                                 ->helperText('Include country code if international'),
@@ -396,9 +435,9 @@ class MemberResource extends Resource
 
                             Forms\Components\TextInput::make('office_contact_number')
                                 ->label('Office Contact Number')
-                                ->placeholder('+63 2 123 4567')
+                                ->placeholder('0912 345 6789')
                                 ->maxLength(20)
-                                ->tel()
+                                ->mask('9999 999 9999')
                                 ->rule('regex:/^[\+]?[0-9\s\-\(\)]{7,20}$/')
                                 ->suffixIcon('heroicon-m-building-office'),
                         ]),
@@ -485,18 +524,36 @@ class MemberResource extends Resource
                 Tables\Columns\TextColumn::make('subscriptions.expires_at')
                     ->label('Expiration Date')
                     ->date('M j, Y')
-                    ->placeholder('Archived')
-                    ->getStateUsing(fn ($record) =>
-                    $record->subscriptions->sortByDesc('expires_at')->first()?->expires_at
-                    )
-                    ->color(fn ($state) =>
-                    $state instanceof \Illuminate\Support\Carbon && $state->lt(now())
-                        ? 'danger'
-                        : ($state && $state->lt(now()->addDays(30))
-                        ? 'warning'
-                        : 'success')
-                    )
+                    ->placeholder('Archived/Deceased')
+                    ->getStateUsing(function ($record) {
+                        // If member is inactive, show "Archived/Deceased" instead of expiration date
+                        if (!$record->is_active) {
+                            return 'Archived/Deceased';
+                        }
+
+                        // For active members, return the expiration date
+                        return $record->subscriptions->sortByDesc('expires_at')->first()?->expires_at;
+                    })
+                    ->color(function ($state, $record) {
+                        // If member is inactive, use gray color
+                        if (!$record->is_active) {
+                            return 'gray';
+                        }
+
+                        // For active members, use existing color logic
+                        return $state instanceof \Illuminate\Support\Carbon && $state->lt(now())
+                            ? 'danger'
+                            : ($state && $state->lt(now()->addDays(30))
+                            ? 'warning'
+                            : 'success');
+                    })
                     ->description(function ($record) {
+                        // If member is inactive, show "Member not active"
+                        if (!$record->is_active) {
+                            return 'Member not active';
+                        }
+
+                        // For active members, use existing description logic
                         $expiresAt = $record->subscriptions->sortByDesc('expires_at')->first()?->expires_at;
 
                         if (! $expiresAt instanceof \Illuminate\Support\Carbon) {
@@ -506,6 +563,15 @@ class MemberResource extends Resource
                         return $expiresAt->lt(now())
                             ? 'Expired'
                             : ($expiresAt->lt(now()->addDays(30)) ? 'Expires soon' : 'Active');
+                    })
+                    ->formatStateUsing(function ($state, $record) {
+                        // If member is inactive, return the "Archived/Deceased" text as-is
+                        if (!$record->is_active) {
+                            return $state;
+                        }
+
+                        // For active members, format the date normally
+                        return $state instanceof \Illuminate\Support\Carbon ? $state->format('M j, Y') : $state;
                     }),
 
                 Tables\Columns\TextColumn::make('age')
@@ -592,8 +658,9 @@ class MemberResource extends Resource
                     ->label('Status')
                     ->options([
                         1 => 'Active',
-                        0 => 'Inactive',
+                        0 => 'Archived/Deceased',
                     ])
+                    ->default(1)
                     ->placeholder('All Statuses'),
 
                 Tables\Filters\SelectFilter::make('status')
@@ -603,6 +670,7 @@ class MemberResource extends Resource
                         'accepted' => 'Accepted',
                         'declined' => 'Declined',
                     ])
+                    ->default('accepted')
                     ->placeholder('All Applications'),
 
                 Tables\Filters\SelectFilter::make('branch_number')
@@ -651,9 +719,10 @@ class MemberResource extends Resource
                                 'no_subscription' => 'No Subscription',
                             ])
                             ->placeholder('All Subscription Statuses')
+                            // ->default('expiring_soon') // Set default here
                     ])
                     ->query(function (Builder $query, array $data): Builder {
-                        if (!isset($data['subscription_filter'])) {
+                        if (!isset($data['subscription_filter'])) {;
                             return $query;
                         }
 
@@ -666,22 +735,33 @@ class MemberResource extends Resource
                         };
                     }),
 
-                Tables\Filters\Filter::make('created_at')
-                    ->form([
-                        Forms\Components\DatePicker::make('created_from')
-                            ->label('Joined From'),
-                        Forms\Components\DatePicker::make('created_until')
-                            ->label('Joined Until'),
-                    ])
-                    ->query(function (Builder $query, array $data): Builder {
-                        return $query
-                            ->when($data['created_from'],
-                                fn (Builder $query, $date) => $query->whereDate('created_at', '>=', $date)
-                            )
-                            ->when($data['created_until'],
-                                fn (Builder $query, $date) => $query->whereDate('created_at', '<=', $date)
-                            );
-                    }),
+                    Tables\Filters\Filter::make('expiration_date_range')
+                        ->label('Expiration Date Range')
+                        ->form([
+                            Forms\Components\DatePicker::make('expires_from')
+                                ->label('Expires From')
+                                ->placeholder('Select start date')
+                                ->default(now()->subMonth()->startOfMonth()), // 1 month before today
+                            Forms\Components\DatePicker::make('expires_until')
+                                ->label('Expires Until')
+                                ->placeholder('Select end date')
+                                ->default(now()->addMonth()->endOfMonth()), // 1 month after today
+                        ])
+                        ->query(function (Builder $query, array $data): Builder {
+                            $expiresFrom = $data['expires_from'] ?? now()->subMonth()->startOfMonth(); // Default to 1 month before
+                            $expiresUntil = $data['expires_until'] ?? now()->addMonth()->endOfMonth(); // Default to 1 month after
+
+                            // Only include members with subscriptions within the date range
+                            return $query
+                                ->whereRaw(
+                                    '(SELECT expires_at FROM subscriptions WHERE member_id = members.id ORDER BY expires_at DESC LIMIT 1) >= ?',
+                                    [$expiresFrom]
+                                )
+                                ->whereRaw(
+                                    '(SELECT expires_at FROM subscriptions WHERE member_id = members.id ORDER BY expires_at DESC LIMIT 1) <= ?',
+                                    [$expiresUntil]
+                                );
+                        }),
             ])
             ->actions([
                 Tables\Actions\ActionGroup::make([
@@ -707,7 +787,11 @@ class MemberResource extends Resource
                         ->requiresConfirmation()
                         ->action(function (Model $record) {
                             app(StatusService::class)->toggle($record, Auth::user());
-                        }),
+                        })
+                        ->visible(fn (Model $record): bool =>
+                            // Only show the action if is_active is true
+                            $record->is_active || Auth::user()->hasRole('super_admin')
+                        ),
 
                     Tables\Actions\Action::make('accept')
                         ->label('Accept')
@@ -826,12 +910,18 @@ class MemberResource extends Resource
                             return response()->streamDownload(function () use ($records) {
                                 $csv = Writer::createFromString('');
                                 $csv->insertOne([
-                                    'ID', 'CID', 'Name', 'Branch', 'Email', 'Phone', 'Address',
-                                    'Age', 'Gender', 'Marital Status', 'Occupation',
-                                    'Employment Status', 'Status', 'Joined Date', 'Account Name', 'Account Number', 'Amount', 'Payment Date', 'Subscription Date', 'Remarks'
+                                    'ID', 'CID', 'Name', 'Branch', 'Email',
+                                    'Phone', 'Address', 'Age', 'Gender', 'Marital Status',
+                                    'Occupation', 'Employment Status', 'Status', 'Joined Date', 'Account Name',
+                                    'Account Number', 'Amount', 'Payment Date', 'Subscription Date', 'Remarks',
+                                    'Note: Date Format'
                                 ]);
 
+                                // Sort records by last_name before inserting them
+                                $records = $records->sortBy('last_name');
+
                                 foreach ($records as $record) {
+
                                     $csv->insertOne([
                                         $record->id,
                                         $record->cid,
@@ -846,7 +936,13 @@ class MemberResource extends Resource
                                         $record->occupation,
                                         $record->employment_status,
                                         $record->is_active ? 'Active' : 'Archived',
-                                        $record->created_at->format('Y-m-d'),
+                                        $record->created_at->format('m/d/Y'),
+                                        $record->latestSubscription->productAccount->product_name,
+                                        $record->latestSubscription->productAccount->account_number,
+                                        $record->latestSubscription->amount, '',
+                                        $record->latestSubscription->expires_at->format('m/d/Y'),
+                                        'RENEWAL',
+                                        'month/day/Year (12/18/2025)',
                                     ]);
                                 }
 
@@ -909,7 +1005,7 @@ class MemberResource extends Resource
             ->persistFiltersInSession()
             ->persistSearchInSession()
             ->filtersFormColumns(2)
-            ->paginated([10,25, 50, 100])
+            ->paginated([10,25, 50])
             ->defaultPaginationPageOption(10)
             ->deferLoading()
             ->searchOnBlur()

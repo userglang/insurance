@@ -14,29 +14,14 @@ class Subscription extends Model
 {
     use HasFactory, HasUuids;
 
-    /**
-     * The table associated with the model.
-     */
     protected $table = 'subscriptions';
 
-    /**
-     * The primary key for the model.
-     */
     protected $primaryKey = 'id';
 
-    /**
-     * The "type" of the primary key ID.
-     */
     protected $keyType = 'string';
 
-    /**
-     * Indicates if the IDs are auto-incrementing.
-     */
     public $incrementing = false;
 
-    /**
-     * The attributes that are mass assignable.
-     */
     protected $fillable = [
         'member_id',
         'insurance_id',
@@ -50,9 +35,6 @@ class Subscription extends Model
         'updated_by',
     ];
 
-    /**
-     * The attributes that should be cast.
-     */
     protected $casts = [
         'amount' => 'decimal:2',
         'payment_date' => 'date',
@@ -64,7 +46,19 @@ class Subscription extends Model
 
     protected static function booted(): void
     {
-        static::creating(function ($model) {
+        static::creating(function (self $model): void {
+            // Check if the member already has an active subscription
+            $hasActiveSubscription = Subscription::query()
+                ->where('member_id', $model->member_id)
+                ->where('expires_at', '>=', now())
+                ->exists();
+
+            if ($hasActiveSubscription) {
+                // If the member already has an active subscription, prevent creation
+                throw new \Exception('Member already has an active subscription.');
+            }
+
+            // Continue with the existing logic
             if (empty($model->id)) {
                 $model->id = (string) Str::uuid();
             }
@@ -83,98 +77,85 @@ class Subscription extends Model
                 $model->product_account_id = $productAccount->id;
             }
 
-            // Set created_by and updated_by from authenticated user
-            if (Auth::check()) {
-                $model->created_by = Auth::id();
-                $model->updated_by = Auth::id();
-            }
+            $model->setUserstamps();
         });
 
-        static::updating(function ($model) {
-
-            // Update expires_at if subscription is being reactivated
-            if ($model->isDirty('is_active') && $model->is_active && empty($model->expires_at)) {
-                $model->expires_at = now()->addDays(365);
-            }
-            // Reset expires_at if changing activation date
-            elseif ($model->isDirty('activated_at') && !empty($model->activated_at)) {
+        static::updating(function (self $model): void {
+            // If subscription is being reactivated and expires_at is empty
+            if ($model->isDirty('activated_at') && !empty($model->activated_at)) {
                 $model->expires_at = Carbon::parse($model->activated_at)->addDays(365);
             }
 
-            if (Auth::check()) {
-                $model->updated_by = Auth::id();
+            // Only extend expires_at if subscription is active now and expires_at is empty
+            if ($model->isActive() && empty($model->expires_at)) {
+                $model->expires_at = now()->addDays(365);
             }
-        });
 
+            $model->setUserstamps('updated_by');
+        });
     }
 
+
     /**
-     * Get the member that owns the subscription.
+     * Set created_by and/or updated_by from authenticated user.
+     *
+     * @param string|null $field
      */
-    public function member()
+    protected function setUserstamps(string $field = null): void
+    {
+        if (Auth::check()) {
+            if ($field === 'updated_by') {
+                $this->updated_by = Auth::id();
+            } else {
+                $this->created_by = Auth::id();
+                $this->updated_by = Auth::id();
+            }
+        }
+    }
+
+    public function member(): BelongsTo
     {
         return $this->belongsTo(Member::class);
     }
 
-    /**
-     * Get the product account for this subscription.
-     */
-    public function productAccount()
+    public function productAccount(): BelongsTo
     {
         return $this->belongsTo(ProductAccount::class);
     }
 
-    /**
-     * Get the insurance that owns the Subscription
-     *
-     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
-     */
-    public function insurance()
+    public function insurance(): BelongsTo
     {
         return $this->belongsTo(Insurance::class);
     }
 
-    /**
-     * Get the user who created the subscription.
-     */
     public function createdBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
     }
 
-    /**
-     * Get the user who last updated the subscription.
-     */
     public function updatedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'updated_by');
     }
 
-    /**
-     * Scope a query to only include active subscriptions.
-     */
     public function scopeActive($query)
     {
         return $query->where('expires_at', '>', now());
     }
 
-
-    /**
-     * Scope a query to only include expired subscriptions.
-     */
     public function scopeExpired($query)
     {
         return $query->where('expires_at', '<=', now());
     }
 
-    /**
-     * Scope a query to only include future subscriptions.
-     */
     public function scopeFuture($query)
     {
         return $query->where('activated_at', '>', now());
     }
 
+    /**
+     * Scope subscriptions expiring in the next 30 days and latest per member.
+     */
     public function scopeExpiringSoon($query)
     {
         return $query->whereIn('id', function ($subquery) {
@@ -182,52 +163,52 @@ class Subscription extends Model
                 ->from('subscriptions as s1')
                 ->whereBetween('s1.expires_at', [now(), now()->addDays(30)])
                 ->whereRaw('s1.activated_at = (
-                SELECT MAX(s2.activated_at)
-                FROM subscriptions as s2
-                WHERE s2.member_id = s1.member_id
-            )');
+                    SELECT MAX(s2.activated_at)
+                    FROM subscriptions as s2
+                    WHERE s2.member_id = s1.member_id
+                )');
         });
     }
 
-    /**
-     * Scope a query to filter by member.
-     */
     public function scopeForMember($query, $memberId)
     {
         return $query->where('member_id', $memberId);
     }
 
     /**
-     * Check if the subscription is currently active.
+     * Returns true if subscription is currently active.
      */
     public function isActive(): bool
     {
         $now = now();
-        return $this->activated_at <= $now && $this->expires_at > $now;
+        return $this->activated_at !== null
+            && $this->expires_at !== null
+            && $this->activated_at <= $now
+            && $this->expires_at > $now;
     }
 
     /**
-     * Check if the subscription has expired.
+     * Returns true if subscription has expired.
      */
     public function isExpired(): bool
     {
-        return $this->expires_at <= now();
+        return $this->expires_at !== null && $this->expires_at <= now();
     }
 
     /**
-     * Check if the subscription is scheduled for future activation.
+     * Returns true if subscription activates in the future.
      */
     public function isFuture(): bool
     {
-        return $this->activated_at > now();
+        return $this->activated_at !== null && $this->activated_at > now();
     }
 
     /**
-     * Get the number of days remaining until expiration.
+     * Get days remaining until expiration.
      */
     public function daysRemaining(): int
     {
-        if ($this->isExpired()) {
+        if ($this->expires_at === null || $this->isExpired()) {
             return 0;
         }
 
@@ -235,16 +216,21 @@ class Subscription extends Model
     }
 
     /**
-     * Extend the subscription by a given number of days.
+     * Extend subscription by specified number of days.
      */
     public function extendBy(int $days): bool
     {
+        if ($this->expires_at === null) {
+            $this->expires_at = now();
+        }
+
         $this->expires_at = $this->expires_at->addDays($days);
+
         return $this->save();
     }
 
     /**
-     * Get the subscription status.
+     * Get subscription status attribute.
      */
     public function getStatusAttribute(): string
     {

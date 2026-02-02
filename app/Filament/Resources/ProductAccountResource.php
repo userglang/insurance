@@ -14,6 +14,7 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\SoftDeletingScope;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
 
 class ProductAccountResource extends Resource
@@ -50,8 +51,32 @@ class ProductAccountResource extends Resource
                 ->schema([
                     Forms\Components\Select::make('member_id')
                         ->label('Member')
-                        ->relationship('member', 'first_name')
-                        ->getOptionLabelFromRecordUsing(fn ($record) => $record->first_name . ', ' . $record->middle_name. ' ' . $record->last_name. ' ' . $record->suffix)
+                        ->relationship(
+                            name: 'member',
+                            titleAttribute: 'last_name',
+                            modifyQueryUsing: function ($query) {
+
+                                $user = Auth::user();
+
+                                // Order by last name and first name
+                                $query->orderBy('last_name')->orderBy('first_name');
+
+                                // Filter by branch if not super admin
+                                if (!$user->hasRole('super_admin')) {
+                                    $branchNumber = $user->branch?->branch_number;
+
+                                    if ($branchNumber) {
+                                        $query->where('branch_number', $branchNumber);
+                                    } else {
+                                        // No branch assigned, show no members
+                                        $query->whereRaw('1 = 0');
+                                    }
+                                }
+
+                                return $query;
+                            }
+                        )
+                        ->getOptionLabelFromRecordUsing(fn ($record) => $record->last_name . ', ' . $record->first_name. ' ' . $record->middle. ' ' . $record->suffix)
                         ->searchable()
                         ->preload()
                         ->required()

@@ -28,9 +28,10 @@ class EditMember extends EditRecord
 
         /** @var Model $record */
         $record = $this->getRecord();
+        $user = Auth::user();
 
         // ✅ Check if the user has the 'super_admin' role and the member is active
-        if (! $record->is_active  || ! Auth::user()->hasRole('super_admin')) {
+        if (! $record->is_active  && ! Auth::user()->hasRole('super_admin')) {
 
             Log::warning('Unauthorized edit attempt:', [
                 'user_id' => $user->id,

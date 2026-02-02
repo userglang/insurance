@@ -58,14 +58,15 @@ class SubscriptionImport implements ToCollection
                 ], [
                     'member_id' => 'required|uuid|exists:members,id',
                     'account_number' => 'nullable|string|max:50',
-                    'amount' => 'required|numeric|min:0',
-                    'payment_date' => 'required|date_format:d/m/Y',
-                    'subscription_date' => 'required|date_format:d/m/Y',
+                    'amount' => 'required',
+                    'payment_date' => 'required|date_format:m/d/Y',
+                    'subscription_date' => 'required|date_format:m/d/Y',
                 ]);
 
                 if ($validator->fails()) {
                     $this->errorRows[] = [
                         'row' => $row->toArray(),
+                        'member_name' => $member ? $member->full_name : 'Unknown', // Add member's full_name
                         'reason' => 'Validation failed',
                         'errors' => $validator->errors()->toArray(),
                     ];
@@ -76,7 +77,22 @@ class SubscriptionImport implements ToCollection
                 if (! $member) {
                     $this->errorRows[] = [
                         'row' => $row->toArray(),
+                        'member_name' => 'Unknown', // Member not found, so use 'Unknown'
                         'reason' => "Member not found",
+                    ];
+                    continue;
+                }
+
+                $hasActiveSubscription = Subscription::where('member_id', $member->id)
+                    ->where('expires_at', '>=', now()) // Only check if subscription is still valid
+                    ->exists();
+
+                if ($hasActiveSubscription) {
+                    $this->duplicateCount++;
+                    $this->duplicateRows[] = [
+                        'row' => $row->toArray(),
+                        'member_name' => $member->full_name, // Add full_name to duplicate rows
+                        'reason' => 'Active subscription exists for this member.',
                     ];
                     continue;
                 }
@@ -96,11 +112,12 @@ class SubscriptionImport implements ToCollection
 
                 // Date conversion
                 try {
-                    $paymentDate = $paymentDateRaw ? Carbon::createFromFormat('d/m/Y', $paymentDateRaw) : null;
-                    $subscriptionDate = $subscriptionDateRaw ? Carbon::createFromFormat('d/m/Y', $subscriptionDateRaw) : null;
+                    $paymentDate = $paymentDateRaw ? Carbon::createFromFormat('m/d/Y', $paymentDateRaw) : null;
+                    $subscriptionDate = $subscriptionDateRaw ? Carbon::createFromFormat('m/d/Y', $subscriptionDateRaw) : null;
                 } catch (\Exception $e) {
                     $this->errorRows[] = [
                         'row' => $row->toArray(),
+                        'member_name' => $member->full_name, // Add full_name to error rows
                         'reason' => 'Date parsing failed',
                         'error' => $e->getMessage(),
                     ];
@@ -117,6 +134,7 @@ class SubscriptionImport implements ToCollection
                     $this->duplicateCount++;
                     $this->duplicateRows[] = [
                         'row' => $row->toArray(),
+                        'member_name' => $member->full_name, // Add full_name to duplicate rows
                         'reason' => 'Duplicate subscription (same member/payment_date/insurance)',
                     ];
                     continue;
@@ -128,9 +146,9 @@ class SubscriptionImport implements ToCollection
                     'insurance_id' => $this->insuranceId,
                     'product_account_id' => $productAccount?->id,
                     'amount' => (float) $amount,
-                    'payment_date' => $paymentDate,
-                    'activated_at' => $subscriptionDate,
-                    'expires_at' => $subscriptionDate?->copy()->addYear(),
+                    'payment_date' => $paymentDate,  // Store as Carbon object for date manipulation
+                    'activated_at' => $paymentDate,  // Store the Carbon object
+                    'expires_at' => $subscriptionDate ? $subscriptionDate->copy()->addYear() : null,  // Add a year to the subscription date
                 ]);
 
                 $this->insertedCount++;

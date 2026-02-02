@@ -100,22 +100,26 @@ class CreateMember extends CreateRecord
                                         ->minValue(1)
                                         ->maxValue(999999.99)
                                         ->step(0.01)
-                                        ->default(160.00)
+                                        ->default(180.00)
                                         ->columnSpan(1),
 
                                     DatePicker::make('payment_date')
                                         ->label('Payment Date')
+                                        ->native(true)
                                         ->required()
                                         ->default(now())
-                                        ->maxDate(now())
+                                        ->maxDate(now()->addDays(60))
+                                        ->minDate(now()->subDays(60))
                                         ->displayFormat('M j, Y')
                                         ->columnSpan(1),
 
                                     DatePicker::make('activated_at')
                                         ->label('Activation Date')
+                                        ->native(true)
                                         ->required()
                                         ->default(now())
-                                        ->maxDate(now()->addDays(30)) // Allow future activation up to 30 days
+                                        ->maxDate(now()->addDays(60)) // Allow future activation up to 30 days
+                                        ->minDate(now()->subDays(60))
                                         ->displayFormat('M j, Y')
                                         ->columnSpan(1),
                                 ]),

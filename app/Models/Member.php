@@ -155,9 +155,10 @@ class Member extends Model
     public function getFullNameAttribute(): string
     {
         $parts = array_filter([
+            $this->last_name,
+            ', ',
             $this->first_name,
             $this->middle_name,
-            $this->last_name,
             $this->suffix,
         ]);
 
