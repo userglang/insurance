@@ -82,9 +82,9 @@ class MainPanelProvider extends PanelProvider
             ])
             ->authMiddleware([
                 Authenticate::class,
-                // RequiredChangePassword::class,
-                // BusinessHoursAccess::class,
-                // RestrictToPhilippines::class,
+                RequiredChangePassword::class,
+                BusinessHoursAccess::class,
+                RestrictToPhilippines::class,
                 // 'required.password.change',
             ])
             ->spa()

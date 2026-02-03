@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Route;
 use \Illuminate\Support\Facades\Storage;
 
 Route::get('/', function () {
-    return view('welcome');
+    return redirect()->route('filament.main.auth.login');
 });
 
 Route::get('/member/print/{member}', function (Member $member) {

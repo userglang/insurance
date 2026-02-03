@@ -179,7 +179,7 @@
             <td>{{ $subscription->member->branch?->branch_name ?? 'N/A' }}</td>
             <td>{{ $subscription->insurance?->insurance_name ?? 'N/A' }}</td>
             <td><b>P</b> {{ number_format($subscription->amount, 2) }}</td>
-            <td>{{ $subscription->productAccount?->product_name . ( . $subscription->productAccount?->account_number . ) }}</td>
+            <td>{{ $subscription->productAccount?->product_name . ' (' . $subscription->productAccount?->account_number . ')' }}</td>
             <td>{{ $subscription->payment_date?->format('M j, Y') }}</td>
             <td>{{ $subscription->activated_at?->format('M j, Y') }}</td>
             <td>{{ $subscription->expires_at?->format('M j, Y') }}</td>
