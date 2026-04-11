@@ -3,7 +3,6 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\ProductAccountResource\Pages;
-use App\Filament\Resources\ProductAccountResource\RelationManagers;
 use App\Models\Member;
 use App\Models\ProductAccount;
 use Filament\Forms;
@@ -12,40 +11,36 @@ use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
-use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\SoftDeletingScope;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Str;
 
 class ProductAccountResource extends Resource
 {
     protected static ?string $model = ProductAccount::class;
 
-    protected static ?string $navigationIcon = 'heroicon-o-banknotes';
-
-    protected static ?string $navigationGroup = 'Member Management';
-    protected static ?string $navigationLabel = 'Member Accounts';
-    protected static ?string $pluralModelLabel = 'Member Accounts';
-    protected static ?string $modelLabel = 'Member Account';
-    protected static ?string $slug = 'member-accounts';
-
-    protected static ?int $navigationSort = 2;
-
+    protected static ?string $navigationIcon    = 'heroicon-o-banknotes';
+    protected static ?string $navigationGroup   = 'Member Management';
+    protected static ?string $navigationLabel   = 'Member Accounts';
+    protected static ?string $pluralModelLabel  = 'Member Accounts';
+    protected static ?string $modelLabel        = 'Member Account';
+    protected static ?string $slug              = 'member-accounts';
     protected static ?string $recordTitleAttribute = 'product_name';
+    protected static ?int    $navigationSort    = 2;
+
+    // -------------------------------------------------------------------------
+    // Form
+    // -------------------------------------------------------------------------
 
     public static function form(Form $form): Form
     {
-        return $form
-            ->schema([
-                ...self::getAccountDetails(),
-                ...self::getProductAccountDetails(),
-            ]);
+        return $form->schema([
+            ...static::getAccountDetails(),
+            ...static::getProductAccountDetails(),
+        ]);
     }
 
     public static function getAccountDetails(): array
     {
-        return
-        [
+        return [
             Forms\Components\Section::make('Member Information')
                 ->description('Select the member and provide basic account details')
                 ->schema([
@@ -55,32 +50,28 @@ class ProductAccountResource extends Resource
                             name: 'member',
                             titleAttribute: 'last_name',
                             modifyQueryUsing: function ($query) {
-
                                 $user = Auth::user();
 
-                                // Order by last name and first name
                                 $query->orderBy('last_name')->orderBy('first_name');
 
-                                // Filter by branch if not super admin
-                                if (!$user->hasRole('super_admin')) {
-                                    $branchNumber = $user->branch?->branch_number;
-
-                                    if ($branchNumber) {
-                                        $query->where('branch_number', $branchNumber);
-                                    } else {
-                                        // No branch assigned, show no members
-                                        $query->whereRaw('1 = 0');
-                                    }
+                                if ($user->hasRole('super_admin')) {
+                                    return $query;
                                 }
 
-                                return $query;
+                                $branchNumber = $user->branch?->branch_number;
+
+                                return $branchNumber
+                                    ? $query->where('branch_number', $branchNumber)
+                                    : $query->whereRaw('1 = 0');
                             }
                         )
-                        ->getOptionLabelFromRecordUsing(fn ($record) => $record->last_name . ', ' . $record->first_name. ' ' . $record->middle. ' ' . $record->suffix)
+                        ->getOptionLabelFromRecordUsing(
+                            fn ($record) => "{$record->last_name}, {$record->first_name} {$record->middle} {$record->suffix}"
+                        )
                         ->searchable()
                         ->preload()
                         ->required()
-                        ->live() // 👈 This makes the field reactive
+                        ->live()
                         ->placeholder('Select a member')
                         ->helperText('Choose the member this record belongs to')
                         ->createOptionForm([
@@ -88,71 +79,71 @@ class ProductAccountResource extends Resource
                             ...MemberResource::getContactInformation(),
                             ...MemberResource::getGovernmentIDs(),
                         ])
-                        ->createOptionUsing(function (array $data) {
-                            return Member::create($data);
-                        }),
-
-
-                ])
+                        ->createOptionUsing(fn (array $data) => Member::create($data)),
+                ]),
         ];
     }
+
     public static function getProductAccountDetails(): array
     {
         return [
             Forms\Components\Section::make('Product Information')
                 ->description('Enter the basic details about the product or service')
                 ->schema([
-                    Grid::make(2)
-                        ->schema([
-                            Forms\Components\TextInput::make('product_name')
-                                ->label('Product Name')
-                                ->required()
-                                ->maxLength(255)
-                                ->placeholder('Enter product name')
-                                ->helperText('The name of the product or service')
-                                ->autocomplete('off')
-                                ->live(onBlur: true)
-                                ->afterStateUpdated(function (string $state, callable $set) {
-                                    // Auto-capitalize first letter of each word
-                                    $set('product_name', ucwords(strtolower($state)));
-                                }),
+                    Grid::make(2)->schema([
+                        Forms\Components\TextInput::make('product_name')
+                            ->label('Product Name')
+                            ->required()
+                            ->maxLength(255)
+                            ->placeholder('Enter product name')
+                            ->helperText('The name of the product or service')
+                            ->autocomplete('off')
+                            ->live(onBlur: true)
+                            ->afterStateUpdated(fn (string $state, callable $set) =>
+                                $set('product_name', ucwords(strtolower($state)))
+                            ),
 
-                            Forms\Components\TextInput::make('account_number')
-                                ->label('Account Number')
-                                ->required()
-                                ->maxLength(255)
-                                ->placeholder('Enter account number')
-                                ->helperText('Unique identifier for this account')
-                                // ->mask('9999-9999-9999') // Adjust mask pattern as needed
-                                ->rule('alpha_num')
-                                ->unique(ignoreRecord: true),
-                        ])
+                        Forms\Components\TextInput::make('account_number')
+                            ->label('Account Number')
+                            ->required()
+                            ->maxLength(255)
+                            ->placeholder('Enter account number')
+                            ->helperText('Unique identifier for this account')
+                            ->rule('alpha_num')
+                            ->unique(ignoreRecord: true),
+                    ]),
                 ]),
         ];
     }
 
+    // -------------------------------------------------------------------------
+    // Table
+    // -------------------------------------------------------------------------
 
     public static function table(Table $table): Table
     {
         return $table
             ->columns([
                 Tables\Columns\TextColumn::make('member.full_name')
+                    ->label('Member Name')
                     ->searchable(['first_name', 'last_name', 'middle_name']),
+
                 Tables\Columns\TextColumn::make('product_name')
+                    ->label('Product Name')
+                    ->description(fn ($record) => ($record->account_number ?? 'Unknown Account Number'))
                     ->searchable(),
-                Tables\Columns\TextColumn::make('account_number')
-                    ->searchable(),
+
                 Tables\Columns\TextColumn::make('created_at')
+                    ->label('Created')
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
+
                 Tables\Columns\TextColumn::make('updated_at')
+                    ->label('Updated')
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
-            ])
-            ->filters([
-                //
             ])
             ->actions([
                 Tables\Actions\EditAction::make(),
@@ -164,19 +155,21 @@ class ProductAccountResource extends Resource
             ]);
     }
 
+    // -------------------------------------------------------------------------
+    // Relations & Pages
+    // -------------------------------------------------------------------------
+
     public static function getRelations(): array
     {
-        return [
-            //
-        ];
+        return [];
     }
 
     public static function getPages(): array
     {
         return [
-            'index' => Pages\ListProductAccounts::route('/'),
+            'index'  => Pages\ListProductAccounts::route('/'),
             'create' => Pages\CreateProductAccount::route('/create'),
-            'edit' => Pages\EditProductAccount::route('/{record}/edit'),
+            'edit'   => Pages\EditProductAccount::route('/{record}/edit'),
         ];
     }
 }

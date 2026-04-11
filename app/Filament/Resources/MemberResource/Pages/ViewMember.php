@@ -2,26 +2,22 @@
 
 namespace App\Filament\Resources\MemberResource\Pages;
 
+use App\Filament\Resources\MemberResource;
 use App\Models\Member;
-use Filament\Forms\Components\FileUpload;
+use Filament\Pages\Actions;
 use Filament\Resources\Pages\Page;
-use Filament\Pages\Actions\EditAction; // <-- Make sure this is imported
-use Filament\Pages\Actions; // Needed for other actions
-use Illuminate\Auth\Access\AuthorizationException;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Gate;
 
 class ViewMember extends Page
 {
-    protected static string $resource = \App\Filament\Resources\MemberResource::class;
-
+    protected static string $resource = MemberResource::class;
     protected static string $view = 'filament.resources.member-resource.pages.view-member';
 
     public Member $record;
 
     public function mount(Member $record): void
     {
-        Gate::authorize('view', $record); // ✅ This calls MemberPolicy@view()
+        Gate::authorize('view', $record);
 
         $this->record = $record;
     }
@@ -41,25 +37,26 @@ class ViewMember extends Page
         return static::generateRouteName($panel, 'view');
     }
 
-
     protected function getHeaderActions(): array
     {
+        $isInactive = ! $this->record->is_active;
+
         return [
             Actions\Action::make('edit')
                 ->label('Edit Profile')
-                ->url(fn () => route('filament.main.resources.members.edit', $this->record))
                 ->icon('heroicon-o-pencil-square')
                 ->color('primary')
-                ->disabled(fn () => ! $this->record->is_active), // Disable if inactive
+                ->url(fn () => route('filament.main.resources.members.edit', $this->record))
+                ->disabled($isInactive),
 
             Actions\Action::make('download_pdf')
                 ->label('Print Profile')
-                ->color('success')
                 ->icon('heroicon-o-printer')
+                ->color('success')
                 ->url(fn () => route('member.print', $this->record))
                 ->openUrlInNewTab()
                 ->requiresConfirmation()
-                ->disabled(fn () => ! $this->record->is_active), // Disable if inactive
+                ->disabled($isInactive),
         ];
     }
 }

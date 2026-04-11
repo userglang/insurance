@@ -6,20 +6,17 @@ use App\Filament\Resources\MemberResource;
 use App\Models\Insurance;
 use App\Models\Member;
 use App\Models\Subscription;
-use App\Exceptions\MemberCreationException;
-use Filament\Resources\Pages\CreateRecord;
-use Filament\Forms\Components\Wizard\Step;
-use Filament\Resources\Pages\CreateRecord\Concerns\HasWizard;
+use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Fieldset;
 use Filament\Forms\Components\Grid;
 use Filament\Forms\Components\Select;
-use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Wizard\Step;
 use Filament\Notifications\Notification;
-use Illuminate\Support\Facades\Auth;
+use Filament\Resources\Pages\CreateRecord;
+use Filament\Resources\Pages\CreateRecord\Concerns\HasWizard;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Validation\ValidationException;
 
 class CreateMember extends CreateRecord
 {
@@ -27,7 +24,9 @@ class CreateMember extends CreateRecord
 
     protected static string $resource = MemberResource::class;
 
-
+    // -------------------------------------------------------------------------
+    // Wizard Steps
+    // -------------------------------------------------------------------------
 
     public static function getSteps(): array
     {
@@ -44,114 +43,107 @@ class CreateMember extends CreateRecord
             Step::make('Other Information')
                 ->schema([
                     ...MemberResource::getGovernmentIDs(),
-
-                    Fieldset::make('Payment Information')
-                        ->schema([
-                            Grid::make(3)
-                                ->schema([
-                                    Select::make('insurance_id')
-                                        ->label('Insurance Plan')
-                                        ->options(
-                                            Insurance::where('is_active', true)
-                                                ->pluck('insurance_name', 'id')
-                                                ->toArray()
-                                        )
-                                        ->preload()
-                                        ->required()
-                                        ->placeholder('Select insurance plan...')
-                                        ->default(fn () => Insurance::where('is_active', true)->first()?->id)
-                                        ->columnSpan(1)
-                                        ->reactive()
-                                        ->afterStateUpdated(function ($state, callable $set) {
-                                            if ($state) {
-                                                $insurance = Insurance::find($state);
-                                                if ($insurance) {
-                                                    $set('amount', $insurance->default_amount ?? 160.00);
-                                                }
-                                            }
-                                        }),
-
-                                    Select::make('account')
-                                        ->label('Account Type')
-                                        ->required()
-                                        ->options([
-                                            'Regular Savings' => 'Regular Savings',
-                                            'Compulsory Savings Deposit' => 'Compulsory Savings Deposit',
-                                            'ATM' => 'ATM',
-                                            'Loan' => 'Loan',
-                                            'Cash' => 'Cash',
-                                        ])
-                                        ->placeholder('Select account type...')
-                                        ->columnSpan(1),
-
-                                    TextInput::make('account_number')
-                                        ->label('Account Number')
-                                        ->required()
-                                        ->default('0')
-                                        ->autocomplete('off')
-                                        ->maxLength(50)
-                                        ->columnSpan(1),
-
-                                    TextInput::make('amount')
-                                        ->label('Subscription Amount')
-                                        ->required()
-                                        ->numeric()
-                                        ->prefix('₱')
-                                        ->minValue(1)
-                                        ->maxValue(999999.99)
-                                        ->step(0.01)
-                                        ->default(180.00)
-                                        ->columnSpan(1),
-
-                                    DatePicker::make('payment_date')
-                                        ->label('Payment Date')
-                                        ->native(true)
-                                        ->required()
-                                        ->default(now())
-                                        ->maxDate(now()->addDays(60))
-                                        ->minDate(now()->subDays(60))
-                                        ->displayFormat('M j, Y')
-                                        ->columnSpan(1),
-
-                                    DatePicker::make('activated_at')
-                                        ->label('Activation Date')
-                                        ->native(true)
-                                        ->required()
-                                        ->default(now())
-                                        ->maxDate(now()->addDays(60)) // Allow future activation up to 30 days
-                                        ->minDate(now()->subDays(60))
-                                        ->displayFormat('M j, Y')
-                                        ->columnSpan(1),
-                                ]),
-                        ]),
-
+                    static::getPaymentInformationFieldset(),
                     ...MemberResource::getAdditionalInformation(),
                 ]),
         ];
     }
 
+    private static function getPaymentInformationFieldset(): Fieldset
+    {
+        return Fieldset::make('Payment Information')
+            ->schema([
+                Grid::make(3)->schema([
+                    Select::make('insurance_id')
+                        ->label('Insurance Plan')
+                        ->options(fn () => Insurance::where('is_active', true)->pluck('insurance_name', 'id'))
+                        ->preload()
+                        ->required()
+                        ->placeholder('Select insurance plan...')
+                        ->default(fn () => Insurance::where('is_active', true)->first()?->id)
+                        ->reactive()
+                        ->afterStateUpdated(function ($state, callable $set) {
+                            if ($state) {
+                                $amount = Insurance::find($state)?->default_amount ?? 160.00;
+                                $set('amount', $amount);
+                            }
+                        })
+                        ->columnSpan(1),
+
+                    Select::make('account')
+                        ->label('Account Type')
+                        ->required()
+                        ->options([
+                            'Regular Savings'            => 'Regular Savings',
+                            'Compulsory Savings Deposit' => 'Compulsory Savings Deposit',
+                            'ATM'                        => 'ATM',
+                            'Loan'                       => 'Loan',
+                            'Cash'                       => 'Cash',
+                        ])
+                        ->placeholder('Select account type...')
+                        ->columnSpan(1),
+
+                    TextInput::make('account_number')
+                        ->label('Account Number')
+                        ->required()
+                        ->default('0')
+                        ->autocomplete('off')
+                        ->maxLength(50)
+                        ->columnSpan(1),
+
+                    TextInput::make('amount')
+                        ->label('Subscription Amount')
+                        ->required()
+                        ->numeric()
+                        ->prefix('₱')
+                        ->minValue(1)
+                        ->maxValue(999999.99)
+                        ->step(0.01)
+                        ->default(180.00)
+                        ->columnSpan(1),
+
+                    DatePicker::make('payment_date')
+                        ->label('Payment Date')
+                        ->native(true)
+                        ->required()
+                        ->default(now())
+                        ->minDate(now()->subDays(60))
+                        ->maxDate(now()->addDays(60))
+                        ->displayFormat('M j, Y')
+                        ->columnSpan(1),
+
+                    DatePicker::make('activated_at')
+                        ->label('Activation Date')
+                        ->native(true)
+                        ->required()
+                        ->default(now())
+                        ->minDate(now()->subDays(60))
+                        ->maxDate(now()->addDays(60))
+                        ->displayFormat('M j, Y')
+                        ->columnSpan(1),
+                ]),
+            ]);
+    }
+
+    // -------------------------------------------------------------------------
+    // Record Creation
+    // -------------------------------------------------------------------------
+
     protected function handleRecordCreation(array $data): Member
     {
         try {
             return DB::transaction(function () use ($data) {
-                // Clean input data
-                $cleanData = $this->cleanData($data);
+                $member = Member::create($this->cleanMemberData($data));
 
-                // Create member record
-                $member = Member::create($cleanData);
-
-                // Create subscription if insurance is selected
-                if (!empty($data['insurance_id'])) {
+                if (! empty($data['insurance_id'])) {
                     $this->createSubscription($member, $data);
                 }
 
-                // Log the creation
                 Log::info('Member created', [
-                    'member_id' => $member->id,
-                    'created_by' => auth()->id()
+                    'member_id'  => $member->id,
+                    'created_by' => auth()->id(),
                 ]);
 
-                // Show success message
                 Notification::make()
                     ->title('Member Created Successfully')
                     ->success()
@@ -160,7 +152,7 @@ class CreateMember extends CreateRecord
                 return $member;
             });
         } catch (\Exception $e) {
-            Log::error('Member creation failed: ' . $e->getMessage());
+            Log::error('Member creation failed', ['error' => $e->getMessage()]);
 
             Notification::make()
                 ->title('Creation Failed')
@@ -172,42 +164,35 @@ class CreateMember extends CreateRecord
         }
     }
 
-    private function cleanData(array $data): array
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private function cleanMemberData(array $data): array
     {
-        // Remove subscription fields from member data
         unset($data['insurance_id'], $data['account'], $data['account_number'], $data['amount']);
 
-        // Clean text fields
-        foreach ($data as $key => $value) {
-            if (is_string($value)) {
-                $data[$key] = trim(strip_tags($value));
-            }
-        }
-
-        // Add creator info
-        $data['created_by'] = auth()->id();
-
-        return $data;
+        return array_map(
+            fn ($value) => is_string($value) ? trim(strip_tags($value)) : $value,
+            $data
+        ) + ['created_by' => auth()->id()];
     }
 
     private function createSubscription(Member $member, array $data): void
     {
-        // Check if this is a renewal
-        $existingCount = Subscription::where('member_id', $member->id)
+        $isRenewal = Subscription::where('member_id', $member->id)
             ->where('insurance_id', $data['insurance_id'])
-            ->count();
-
-        $remark = $existingCount > 0 ? 'Renewal' : 'First Payment';
+            ->exists();
 
         Subscription::create([
-            'member_id' => $member->id,
-            'insurance_id' => $data['insurance_id'],
-            'account_type' => $data['account'],
+            'member_id'      => $member->id,
+            'insurance_id'   => $data['insurance_id'],
+            'account_type'   => $data['account'],
             'account_number' => trim(strip_tags($data['account_number'])),
-            'amount' => $data['amount'],
-            'payment_date' => $data['payment_date'],
-            'activated_at' => $data['activated_at'],
-            'remark' => $remark,
+            'amount'         => $data['amount'],
+            'payment_date'   => $data['payment_date'],
+            'activated_at'   => $data['activated_at'],
+            'remark'         => $isRenewal ? 'Renewal' : 'First Payment',
         ]);
     }
 

@@ -32,7 +32,7 @@ class BusinessHoursAccess
         }
 
         if ($dayOfWeek >= Carbon::MONDAY && $dayOfWeek <= Carbon::FRIDAY) {
-            if ($hour < 8 || $hour >= 17) {
+            if ($hour < 8 || $hour >= 20) {
                 abort(403);
             }
         }

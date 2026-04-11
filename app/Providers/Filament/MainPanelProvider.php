@@ -46,7 +46,9 @@ class MainPanelProvider extends PanelProvider
                 'warning' => Color::Orange,
                 'danger' => Color::Red,
             ])
-            ->font('Inter', provider: GoogleFontProvider::class)
+            // ->font('Inter', provider: GoogleFontProvider::class)
+            ->maxContentWidth('7xl') // You can change the 7xl to full
+            ->font('Poppins')
             ->favicon(asset('images/favicon.ico'))
             ->brandName('Insurance Monitoring System')
             // ->brandLogo(asset('images/logo.svg'))

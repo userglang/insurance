@@ -2,205 +2,289 @@
 
 namespace App\Imports;
 
-use App\Models\Subscription;
 use App\Models\Member;
 use App\Models\ProductAccount;
+use App\Models\Subscription;
+use Carbon\Carbon;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Validator;
 use Maatwebsite\Excel\Concerns\ToCollection;
-use Carbon\Carbon;
+use Maatwebsite\Excel\Concerns\WithHeadingRow;
 
-class SubscriptionImport implements ToCollection
+class SubscriptionImport implements ToCollection, WithHeadingRow
 {
-    protected string $insuranceId;
-
-    protected int $insertedCount = 0;
+    protected int   $insertedCount       = 0;
     protected float $totalInsertedAmount = 0;
-    protected int $duplicateCount = 0;
+    protected int   $duplicateCount      = 0;
+    protected array $errorRows           = [];
+    protected array $duplicateRows       = [];
 
-    protected array $errorRows = [];
-    protected array $duplicateRows = [];
+    public function __construct(protected string $insuranceId) {}
 
-    public function __construct(string $insuranceId)
+    // -------------------------------------------------------------------------
+    // Import
+    // -------------------------------------------------------------------------
+
+    public function collection(Collection $rows): void
     {
-        $this->insuranceId = $insuranceId;
-    }
-
-    public function collection(Collection $rows)
-    {
-        $headerSkipped = false;
-
         DB::beginTransaction();
 
         try {
-            foreach ($rows as $index => $row) {
-                if (! $headerSkipped) {
-                    $headerSkipped = true;
-                    continue; // Skip header row
-                }
-
-                $memberId = trim($row[0]); // Column A
-                $accountName = strip_tags(trim($row[14] ?? '')); // Column O
-                $accountNumber = preg_replace('/[^\w\d\-]/', '', trim($row[15] ?? '')); // Column P
-                $amount = $row[16] ?? null; // Column Q
-                $paymentDateRaw = $row[17] ?? null; // Column R
-                $subscriptionDateRaw = $row[18] ?? null; // Column S
-
-                // Validate the basic fields
-                $validator = Validator::make([
-                    'member_id' => $memberId,
-                    'account_number' => $accountNumber,
-                    'amount' => $amount,
-                    'payment_date' => $paymentDateRaw,
-                    'subscription_date' => $subscriptionDateRaw,
-                ], [
-                    'member_id' => 'required|uuid|exists:members,id',
-                    'account_number' => 'nullable|string|max:50',
-                    'amount' => 'required',
-                    'payment_date' => 'required|date_format:m/d/Y',
-                    'subscription_date' => 'required|date_format:m/d/Y',
-                ]);
-
-                if ($validator->fails()) {
-                    $this->errorRows[] = [
-                        'row' => $row->toArray(),
-                        'member_name' => $member ? $member->full_name : 'Unknown', // Add member's full_name
-                        'reason' => 'Validation failed',
-                        'errors' => $validator->errors()->toArray(),
-                    ];
-                    continue;
-                }
-
-                $member = Member::find($memberId);
-                if (! $member) {
-                    $this->errorRows[] = [
-                        'row' => $row->toArray(),
-                        'member_name' => 'Unknown', // Member not found, so use 'Unknown'
-                        'reason' => "Member not found",
-                    ];
-                    continue;
-                }
-
-                $hasActiveSubscription = Subscription::where('member_id', $member->id)
-                    ->where('expires_at', '>=', now()) // Only check if subscription is still valid
-                    ->exists();
-
-                if ($hasActiveSubscription) {
-                    $this->duplicateCount++;
-                    $this->duplicateRows[] = [
-                        'row' => $row->toArray(),
-                        'member_name' => $member->full_name, // Add full_name to duplicate rows
-                        'reason' => 'Active subscription exists for this member.',
-                    ];
-                    continue;
-                }
-
-                // Get or create product account
-                $productAccount = ProductAccount::where('member_id', $member->id)
-                    ->where('account_number', $accountNumber)
-                    ->first();
-
-                if (! $productAccount && $accountNumber) {
-                    $productAccount = ProductAccount::create([
-                        'member_id' => $member->id,
-                        'account_number' => $accountNumber,
-                        'product_name' => $accountName ?: $member->full_name,
-                    ]);
-                }
-
-                // Date conversion
-                try {
-                    $paymentDate = $paymentDateRaw ? Carbon::createFromFormat('m/d/Y', $paymentDateRaw) : null;
-                    $subscriptionDate = $subscriptionDateRaw ? Carbon::createFromFormat('m/d/Y', $subscriptionDateRaw) : null;
-                } catch (\Exception $e) {
-                    $this->errorRows[] = [
-                        'row' => $row->toArray(),
-                        'member_name' => $member->full_name, // Add full_name to error rows
-                        'reason' => 'Date parsing failed',
-                        'error' => $e->getMessage(),
-                    ];
-                    continue;
-                }
-
-                // Duplicate check
-                $exists = Subscription::where('member_id', $member->id)
-                    ->where('insurance_id', $this->insuranceId)
-                    ->whereDate('payment_date', $paymentDate)
-                    ->exists();
-
-                if ($exists) {
-                    $this->duplicateCount++;
-                    $this->duplicateRows[] = [
-                        'row' => $row->toArray(),
-                        'member_name' => $member->full_name, // Add full_name to duplicate rows
-                        'reason' => 'Duplicate subscription (same member/payment_date/insurance)',
-                    ];
-                    continue;
-                }
-
-                // Create subscription
-                Subscription::create([
-                    'member_id' => $member->id,
-                    'insurance_id' => $this->insuranceId,
-                    'product_account_id' => $productAccount?->id,
-                    'amount' => (float) $amount,
-                    'payment_date' => $paymentDate,  // Store as Carbon object for date manipulation
-                    'activated_at' => $paymentDate,  // Store the Carbon object
-                    'expires_at' => $subscriptionDate ? $subscriptionDate->copy()->addYear() : null,  // Add a year to the subscription date
-                ]);
-
-                $this->insertedCount++;
-                $this->totalInsertedAmount += (float) $amount;
+            foreach ($rows as $row) {
+                $this->processRow($row);
             }
 
             DB::commit();
 
-            Log::info("Subscription import complete", [
-                'inserted_count' => $this->insertedCount,
-                'total_amount' => $this->totalInsertedAmount,
-                'duplicates_skipped' => $this->duplicateCount,
-                'errors' => count($this->errorRows),
+            Log::info('Subscription import complete', [
+                'inserted'   => $this->insertedCount,
+                'amount'     => $this->totalInsertedAmount,
+                'duplicates' => $this->duplicateCount,
+                'errors'     => count($this->errorRows),
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
-            Log::error('Subscription import failed', [
-                'message' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            Log::error('Subscription import failed', ['message' => $e->getMessage()]);
             throw $e;
         }
     }
 
-    // Accessor methods
-    public function getInsertedCount(): int
+    // -------------------------------------------------------------------------
+    // Row Processing
+    // -------------------------------------------------------------------------
+
+    private function processRow(mixed $row): void
     {
-        return $this->insertedCount;
+        $fields = $this->extractFields($row);
+
+        if (! $this->validate($row, $fields)) return;
+
+        $member = Member::find($fields['member_id']);
+        if (! $member) {
+            $this->addError($row, 'Member not found.');
+            return;
+        }
+
+        // Member must be active (is_active = true) and accepted (status = 'accepted')
+        if (! $this->isMemberActive($member)) {
+            $status = ucfirst($member->status ?? 'unknown');
+            $active = $member->is_active ? 'active' : 'archived';
+            $this->addError($row, "Member '{$member->full_name}' cannot be imported: is {$active} with status '{$status}'. Only active, accepted members are allowed.");
+            return;
+        }
+
+        if ($this->hasActiveSubscription($member->id)) {
+            $this->addDuplicate($row, $member->full_name, 'Active subscription exists for this member.');
+            return;
+        }
+
+        $dates = $this->parseDates($row, $member, $fields);
+        if (! $dates) return;
+
+        ['paymentDate' => $paymentDate, 'subscriptionDate' => $subscriptionDate] = $dates;
+
+        if ($this->isDuplicateSubscription($member->id, $paymentDate)) {
+            $this->addDuplicate($row, $member->full_name, 'Duplicate subscription (same member/payment_date/insurance).');
+            return;
+        }
+
+        $account = $this->resolveProductAccount($member, $fields);
+
+        Subscription::create([
+            'member_id'          => $member->id,
+            'insurance_id'       => $this->insuranceId,
+            'product_account_id' => $account?->id,
+            'amount'             => (float) $fields['amount'],
+            'payment_date'       => $paymentDate,
+            'activated_at'       => $paymentDate,
+            'expires_at'         => $subscriptionDate?->copy()->addYear(),
+        ]);
+
+        $this->insertedCount++;
+        $this->totalInsertedAmount += (float) $fields['amount'];
     }
 
-    public function getTotalInsertedAmount(): float
+    // -------------------------------------------------------------------------
+    // Field Extraction
+    //
+    // WithHeadingRow converts headers to snake_case keys automatically, e.g.:
+    //   'Account Name'      → 'account_name'
+    //   'Account Number'    → 'account_number'
+    //   'Payment Date'      → 'payment_date'
+    //   'Subscription Date' → 'subscription_date'
+    // -------------------------------------------------------------------------
+
+    private function extractFields(mixed $row): array
     {
-        return $this->totalInsertedAmount;
+        return [
+            'member_id'             => trim($row['id'] ?? ''),
+            'account_name'          => strip_tags(trim($row['account_name'] ?? '')),
+            'account_number'        => preg_replace('/[^\w\d\-]/', '', trim($row['account_number'] ?? '')),
+            'amount'                => $row['amount'] ?? null,
+            'payment_date_raw'      => $row['payment_date'] ?? null,
+            'subscription_date_raw' => $row['subscription_date'] ?? null,
+        ];
     }
 
-    public function getDuplicateCount(): int
+    // -------------------------------------------------------------------------
+    // Validation
+    // -------------------------------------------------------------------------
+
+    private function validate(mixed $row, array $fields): bool
     {
-        return $this->duplicateCount;
+        $validator = Validator::make([
+            'member_id'         => $fields['member_id'],
+            'account_number'    => $fields['account_number'],
+            'amount'            => $fields['amount'],
+            'payment_date'      => $fields['payment_date_raw'],
+            'subscription_date' => $fields['subscription_date_raw'],
+        ], [
+            'member_id'         => 'required|uuid|exists:members,id',
+            'account_number'    => 'nullable|string|max:50',
+            'amount'            => 'required|numeric|gt:0',
+            'payment_date'      => 'required|date_format:m/d/Y',
+            'subscription_date' => 'required|date_format:m/d/Y',
+        ], [
+            'amount.gt'      => 'The amount must be greater than zero.',
+            'amount.numeric' => 'The amount must be a valid number.',
+        ]);
+
+        if ($validator->fails()) {
+            $this->errorRows[] = [
+                'row'    => $row->toArray(),
+                'reason' => 'Validation failed',
+                'errors' => $validator->errors()->toArray(),
+            ];
+            return false;
+        }
+
+        return true;
     }
 
-    public function getErrorRows(): array
+    // -------------------------------------------------------------------------
+    // Date Parsing
+    // -------------------------------------------------------------------------
+
+    private function parseDates(mixed $row, Member $member, array $fields): ?array
     {
-        return $this->errorRows;
+        try {
+            $paymentDate      = $fields['payment_date_raw']
+                ? Carbon::createFromFormat('m/d/Y', $fields['payment_date_raw'])
+                : null;
+            $subscriptionDate = $fields['subscription_date_raw']
+                ? Carbon::createFromFormat('m/d/Y', $fields['subscription_date_raw'])
+                : null;
+
+            if ($paymentDate && $subscriptionDate) {
+                $diffInMonths = abs($paymentDate->diffInMonths($subscriptionDate));
+
+                if ($diffInMonths > 6) {
+                    $this->errorRows[] = [
+                        'row'         => $row->toArray(),
+                        'member_name' => $member->full_name,
+                        'reason'      => 'Payment date must not be more than 6 months apart from the subscription date.',
+                    ];
+                    return null;
+                }
+            }
+
+            return [
+                'paymentDate'      => $paymentDate,
+                'subscriptionDate' => $subscriptionDate,
+            ];
+        } catch (\Exception $e) {
+            $this->errorRows[] = [
+                'row'         => $row->toArray(),
+                'member_name' => $member->full_name,
+                'reason'      => 'Date parsing failed',
+                'error'       => $e->getMessage(),
+            ];
+            return null;
+        }
     }
 
-    public function getDuplicateRows(): array
+    // -------------------------------------------------------------------------
+    // Model Resolution
+    // -------------------------------------------------------------------------
+
+    private function resolveProductAccount(Member $member, array $fields): ?ProductAccount
     {
-        return $this->duplicateRows;
+        $accountNumber = $fields['account_number'];
+
+        if (! $accountNumber) return null;
+
+        return ProductAccount::firstOrCreate(
+            ['member_id' => $member->id, 'account_number' => $accountNumber],
+            ['product_name' => $fields['account_name'] ?: $member->full_name]
+        );
     }
 
-    public function getErrorCount(): int
+    // -------------------------------------------------------------------------
+    // Member Status Check
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns true if the member is eligible for subscription import.
+     * - is_active must be true (not archived/deactivated)
+     * - status must be 'accepted' (not 'pending' or 'declined')
+     */
+    private function isMemberActive(Member $member): bool
     {
-        return count($this->errorRows);
+        return $member->is_active === true
+            && strtolower($member->status) === 'accepted';
     }
+
+    // -------------------------------------------------------------------------
+    // Duplicate Checks
+    // -------------------------------------------------------------------------
+
+    private function hasActiveSubscription(string $memberId): bool
+    {
+        return Subscription::where('member_id', $memberId)
+            ->where('expires_at', '>=', now())
+            ->exists();
+    }
+
+    private function isDuplicateSubscription(string $memberId, ?Carbon $paymentDate): bool
+    {
+        return Subscription::where('member_id', $memberId)
+            ->where('insurance_id', $this->insuranceId)
+            ->whereDate('payment_date', $paymentDate)
+            ->exists();
+    }
+
+    // -------------------------------------------------------------------------
+    // Issue Tracking
+    // -------------------------------------------------------------------------
+
+    private function addError(mixed $row, string $reason, array $extras = []): void
+    {
+        $this->errorRows[] = array_merge(
+            ['row' => $row->toArray(), 'reason' => $reason],
+            $extras
+        );
+    }
+
+    private function addDuplicate(mixed $row, string $memberName, string $reason): void
+    {
+        $this->duplicateCount++;
+        $this->duplicateRows[] = [
+            'row'         => $row->toArray(),
+            'member_name' => $memberName,
+            'reason'      => $reason,
+        ];
+    }
+
+    // -------------------------------------------------------------------------
+    // Accessors
+    // -------------------------------------------------------------------------
+
+    public function getInsertedCount(): int        { return $this->insertedCount; }
+    public function getTotalInsertedAmount(): float { return $this->totalInsertedAmount; }
+    public function getDuplicateCount(): int        { return $this->duplicateCount; }
+    public function getErrorCount(): int            { return count($this->errorRows); }
+    public function getErrorRows(): array           { return $this->errorRows; }
+    public function getDuplicateRows(): array       { return $this->duplicateRows; }
 }

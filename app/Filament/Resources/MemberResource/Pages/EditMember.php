@@ -13,8 +13,6 @@ class EditMember extends EditRecord
 {
     protected static string $resource = MemberResource::class;
 
-
-
     protected function getHeaderActions(): array
     {
         return [
@@ -26,26 +24,19 @@ class EditMember extends EditRecord
     {
         parent::authorizeAccess();
 
-        /** @var Model $record */
         $record = $this->getRecord();
-        $user = Auth::user();
+        $user   = Auth::user();
 
-        // ✅ Check if the user has the 'super_admin' role and the member is active
-        if (! $record->is_active  && ! Auth::user()->hasRole('super_admin')) {
-
-            Log::warning('Unauthorized edit attempt:', [
-                'user_id' => $user->id,
-                'user_role' => $user->roles->pluck('name')->toArray(),
-                'member_id' => $record->id,
-                'is_active' => $record->is_active,
-                'reason' => $record->is_active ? 'User does not have super_admin role.' : 'Member is archived.',
-            ]);
-
-            // Option 1: Throw a 403 Forbidden error
-            throw new HttpException(403, 'You cannot edit an archived profile.');
-
-            // Option 2: Redirect instead of throwing an error (uncomment if needed)
-            // redirect()->route('filament.admin.resources.members.index')->send();
+        if ($record->is_active || $user->hasRole('super_admin')) {
+            return;
         }
+
+        Log::warning('Unauthorized edit attempt on archived member', [
+            'user_id'   => $user->id,
+            'user_roles' => $user->roles->pluck('name'),
+            'member_id' => $record->id,
+        ]);
+
+        throw new HttpException(403, 'You cannot edit an archived profile.');
     }
 }
