@@ -845,6 +845,7 @@ class MemberResource extends Resource
                                     (string) $record->contact_number,
                                     (string) $record->full_address,
                                     (string) $record->age,
+                                    (string) $record->birth_date,
                                     (string) $record->gender_label,
                                     (string) $record->marital_status_label,
                                     (string) $record->occupation,
@@ -902,13 +903,13 @@ class MemberResource extends Resource
                                 $validAmounts = [180, 360];
 
                                 if (! in_array($amount, $validAmounts)) {
-                                    $sheet->getStyle("Q{$row}")
+                                    $sheet->getStyle("R{$row}")
                                         ->getFill()
                                         ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
                                         ->getStartColor()
                                         ->setARGB('FFFFFF00');
 
-                                    $sheet->getStyle("Q{$row}")
+                                    $sheet->getStyle("R{$row}")
                                         ->getFont()
                                         ->getColor()
                                         ->setARGB('FF000000');
