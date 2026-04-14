@@ -831,6 +831,8 @@ class MemberResource extends Resource
                                     ->setFormatCode(\PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_TEXT);
                             }
 
+                            $lastColumn = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($totalColumns);
+
                             $row = 2;
                             foreach ($records->sortBy('last_name') as $record) {
                                 $sub = $record->latestSubscription;
@@ -866,6 +868,38 @@ class MemberResource extends Resource
                                         $value,
                                         \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING
                                     );
+                                }
+
+                                // Highlight row based on age
+                                $age = (int) $record->age;
+
+                                if ($age >= 70) {
+                                    // Red highlight for age 70+
+                                    $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
+                                        ->getFill()
+                                        ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                                        ->getStartColor()
+                                        ->setARGB('FFFF0000');
+
+                                    // White text for readability on red
+                                    $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
+                                        ->getFont()
+                                        ->getColor()
+                                        ->setARGB('FFFFFFFF');
+
+                                } elseif ($age >= 65) {
+                                    // Orange highlight for age 65–69
+                                    $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
+                                        ->getFill()
+                                        ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                                        ->getStartColor()
+                                        ->setARGB('FFFF6600');
+
+                                    // White text for readability on orange
+                                    $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
+                                        ->getFont()
+                                        ->getColor()
+                                        ->setARGB('FFFFFFFF');
                                 }
 
                                 $row++;
