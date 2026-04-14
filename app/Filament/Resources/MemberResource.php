@@ -813,7 +813,7 @@ class MemberResource extends Resource
 
                             $headers = [
                                 'ID', 'CID', 'Name', 'Branch', 'Email', 'Phone', 'Address',
-                                'Age', 'Gender', 'Marital Status', 'Occupation', 'Employment Status',
+                                'Age', 'Birth Date', 'Gender', 'Marital Status', 'Occupation', 'Employment Status',
                                 'Status', 'Joined Date', 'Account Name', 'Account Number', 'Amount',
                                 'Payment Date', 'Subscription Date', 'Remarks', 'Note: Date Format',
                             ];
