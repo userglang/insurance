@@ -94,8 +94,8 @@ class SubscriptionResource extends Resource
                             ->label('Subscription Date')
                             ->required()
                             ->default(now())
-                            ->minDate(now()->subDays(60))
-                            ->maxDate(now()->addDays(60))
+                            // ->minDate(now()->subDays(60))
+                            // ->maxDate(now()->addDays(60))
                             ->displayFormat('M j, Y'),
 
                         Forms\Components\TextInput::make('amount')
@@ -111,8 +111,8 @@ class SubscriptionResource extends Resource
                             ->label('Payment Date')
                             ->required()
                             ->default(now())
-                            ->minDate(now()->subDays(60))
-                            ->maxDate(now()->addDays(60))
+                            // ->minDate(now()->subDays(60))
+                            // ->maxDate(now()->addDays(60))
                             ->displayFormat('M j, Y'),
                     ]),
                 ]),

@@ -821,9 +821,8 @@ class MemberResource extends Resource
                             $sheet->fromArray($headers, null, 'A1');
 
                             $totalColumns = count($headers);
-                            $totalRows    = $records->count() + 1; // +1 for header row
+                            $totalRows    = $records->count() + 1;
 
-                            // Set text format only for rows that actually have data
                             foreach (range(1, $totalColumns) as $colIndex) {
                                 $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($colIndex);
                                 $sheet->getStyle("{$colLetter}1:{$colLetter}{$totalRows}")
@@ -870,36 +869,49 @@ class MemberResource extends Resource
                                     );
                                 }
 
-                                // Highlight row based on age
+                                // Highlight entire row based on age
                                 $age = (int) $record->age;
 
                                 if ($age >= 70) {
-                                    // Red highlight for age 70+
                                     $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
                                         ->getFill()
                                         ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
                                         ->getStartColor()
                                         ->setARGB('FFFF0000');
 
-                                    // White text for readability on red
                                     $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
                                         ->getFont()
                                         ->getColor()
                                         ->setARGB('FFFFFFFF');
 
                                 } elseif ($age >= 65) {
-                                    // Orange highlight for age 65–69
                                     $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
                                         ->getFill()
                                         ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
                                         ->getStartColor()
                                         ->setARGB('FFFF6600');
 
-                                    // White text for readability on orange
                                     $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
                                         ->getFont()
                                         ->getColor()
                                         ->setARGB('FFFFFFFF');
+                                }
+
+                                // Highlight Amount column (Q) yellow if not 180 or 360
+                                $amount       = (float) ($sub?->amount ?? 0);
+                                $validAmounts = [180, 360];
+
+                                if (! in_array($amount, $validAmounts)) {
+                                    $sheet->getStyle("Q{$row}")
+                                        ->getFill()
+                                        ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                                        ->getStartColor()
+                                        ->setARGB('FFFFFF00');
+
+                                    $sheet->getStyle("Q{$row}")
+                                        ->getFont()
+                                        ->getColor()
+                                        ->setARGB('FF000000');
                                 }
 
                                 $row++;
