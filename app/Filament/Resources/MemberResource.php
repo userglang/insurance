@@ -809,7 +809,7 @@ class MemberResource extends Resource
                         ->color('info')
                         ->action(function (Collection $records) {
                             $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
-                            $sheet = $spreadsheet->getActiveSheet();
+                            $sheet       = $spreadsheet->getActiveSheet();
 
                             $headers = [
                                 'ID', 'CID', 'Name', 'Branch', 'Email', 'Phone', 'Address',
@@ -820,49 +820,64 @@ class MemberResource extends Resource
 
                             $sheet->fromArray($headers, null, 'A1');
 
+                            $totalColumns = count($headers);
+                            $totalRows    = $records->count() + 1; // +1 for header row
+
+                            // Set text format only for rows that actually have data
+                            foreach (range(1, $totalColumns) as $colIndex) {
+                                $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($colIndex);
+                                $sheet->getStyle("{$colLetter}1:{$colLetter}{$totalRows}")
+                                    ->getNumberFormat()
+                                    ->setFormatCode(\PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_TEXT);
+                            }
+
                             $row = 2;
                             foreach ($records->sortBy('last_name') as $record) {
                                 $sub = $record->latestSubscription;
 
-                                $sheet->fromArray([
-                                    $record->id,
-                                    $record->cid,
-                                    $record->full_name,
-                                    $record->branch?->branch_name ?? 'N/A',
-                                    $record->email,
-                                    $record->contact_number,
-                                    $record->full_address,
-                                    $record->age,
-                                    $record->gender_label,
-                                    $record->marital_status_label,
-                                    $record->occupation,
-                                    $record->employment_status,
-                                    $record->is_active ? 'Active' : 'Archived',
-                                    $record->created_at->format('m/d/Y'),
-                                    $sub?->productAccount?->product_name,
-                                    $sub?->productAccount?->account_number,
-                                    $sub?->amount,
+                                $rowData = [
+                                    (string) $record->id,
+                                    (string) $record->cid,
+                                    (string) $record->full_name,
+                                    (string) ($record->branch?->branch_name ?? 'N/A'),
+                                    (string) $record->email,
+                                    (string) $record->contact_number,
+                                    (string) $record->full_address,
+                                    (string) $record->age,
+                                    (string) $record->gender_label,
+                                    (string) $record->marital_status_label,
+                                    (string) $record->occupation,
+                                    (string) $record->employment_status,
+                                    (string) ($record->is_active ? 'Active' : 'Archived'),
+                                    (string) $record->created_at->format('m/d/Y'),
+                                    (string) ($sub?->productAccount?->product_name ?? ''),
+                                    (string) ($sub?->productAccount?->account_number ?? ''),
+                                    (string) ($sub?->amount ?? ''),
                                     '',
-                                    $sub?->expires_at?->format('m/d/Y'),
+                                    (string) ($sub?->expires_at?->format('m/d/Y') ?? ''),
                                     'RENEWAL',
                                     'month/day/Year (12/18/2025)',
-                                ], null, "A{$row}");
+                                ];
+
+                                foreach ($rowData as $colIndex => $value) {
+                                    $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($colIndex + 1);
+                                    $sheet->setCellValueExplicit(
+                                        "{$colLetter}{$row}",
+                                        $value,
+                                        \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING
+                                    );
+                                }
 
                                 $row++;
                             }
 
-                            $filename = 'members-export-' . now()->format('Y-m-d-H-i-s') . '.csv';
-
-                            $writer = new \PhpOffice\PhpSpreadsheet\Writer\Csv($spreadsheet);
-                            $writer->setDelimiter(',');
-                            $writer->setEnclosure('"');
-                            $writer->setLineEnding("\r\n");
-                            $writer->setSheetIndex(0);
+                            $filename = 'pre-need_export-' . now()->format('Y-m-d-H-i-s') . '.xlsx';
+                            $writer   = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
 
                             return response()->streamDownload(function () use ($writer) {
                                 $writer->save('php://output');
                             }, $filename, [
-                                'Content-Type' => 'text/csv',
+                                'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                             ]);
                         }),
 

@@ -123,9 +123,47 @@ class SubscriptionImport implements ToCollection, WithHeadingRow
             'account_name'          => strip_tags(trim($row['account_name'] ?? '')),
             'account_number'        => preg_replace('/[^\w\d\-]/', '', trim($row['account_number'] ?? '')),
             'amount'                => $row['amount'] ?? null,
-            'payment_date_raw'      => $row['payment_date'] ?? null,
-            'subscription_date_raw' => $row['subscription_date'] ?? null,
+            'payment_date_raw'      => $this->normalizeDate($row['payment_date'] ?? null),
+            'subscription_date_raw' => $this->normalizeDate($row['subscription_date'] ?? null),
         ];
+    }
+
+    // -------------------------------------------------------------------------
+    // Date Normalization
+    //
+    // Handles three possible formats coming from Excel/CSV:
+    //   1. Excel serial number (e.g. 45644)     → converted via PhpSpreadsheet
+    //   2. Already m/d/Y string (e.g. 12/18/2025) → passed through as-is
+    //   3. Other string formats (e.g. Y-m-d)    → parsed and reformatted by Carbon
+    // -------------------------------------------------------------------------
+
+    private function normalizeDate(mixed $value): ?string
+    {
+        if (empty($value)) return null;
+
+        // Excel serial number (e.g. 45644)
+        if (is_numeric($value) && $value > 1000) {
+            try {
+                return \PhpOffice\PhpSpreadsheet\Shared\Date::excelToDateTimeObject((float) $value)
+                    ->format('m/d/Y');
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
+        $value = trim((string) $value);
+
+        // Already m/d/Y → return as-is
+        if (preg_match('/^\d{2}\/\d{2}\/\d{4}$/', $value)) {
+            return $value;
+        }
+
+        // Fallback: try Carbon parsing for other formats (Y-m-d, d-m-Y, etc.)
+        try {
+            return Carbon::parse($value)->format('m/d/Y');
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -243,7 +281,7 @@ class SubscriptionImport implements ToCollection, WithHeadingRow
     private function hasActiveSubscription(string $memberId): bool
     {
         return Subscription::where('member_id', $memberId)
-            ->where('expires_at', '>=', now())
+            ->where('expires_at', '>', now()->addMonths(2))
             ->exists();
     }
 
