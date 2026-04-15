@@ -522,8 +522,7 @@ class MemberResource extends Resource
                             $expires->lt(now()->addDays(30)) => 'warning',
                             default                          => 'success',
                         };
-                    })
-                    ->sortable(),
+                    }),
 
                 Tables\Columns\TextColumn::make('birth_date')
                     ->label('Birth Date')
@@ -698,6 +697,10 @@ class MemberResource extends Resource
                             ? ($record->is_active ? 'Deactivate' : 'Activate')
                             : 'Deactivate'
                         )
+                        ->tooltip(fn (Model $record) => Auth::user()->hasRole('super_admin')
+                            ? ($record->is_active ? 'Click to deactivate or mark as deceased this record' : 'Click to activate this record')
+                            : 'Only deactivation is allowed'
+                        )
                         ->icon(fn (Model $record) => Auth::user()->hasRole('super_admin')
                             ? ($record->is_active ? 'heroicon-o-x-circle' : 'heroicon-o-check-circle')
                             : 'heroicon-o-x-circle'
@@ -752,7 +755,7 @@ class MemberResource extends Resource
                         ->visible(fn () => Auth::user()?->hasRole('super_admin')),
 
                     Tables\Actions\BulkAction::make('deactivate')
-                        ->label('Deactivate Selected')
+                        ->label('Deactivate or Mark as Deceased Selected')
                         ->icon('heroicon-o-x-circle')
                         ->color('danger')
                         ->requiresConfirmation()
