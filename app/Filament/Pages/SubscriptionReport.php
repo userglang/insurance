@@ -67,8 +67,7 @@ class SubscriptionReport extends Page implements HasTable
                             ->native(true)
                             ->required()
                             ->reactive()
-                            ->afterStateUpdated(fn ($state) => $this->startDate = $state)
-                            ->helperText('Format: DD/MM/YYYY.'),
+                            ->afterStateUpdated(fn ($state) => $this->startDate = $state),
 
                         DatePicker::make('end_date')
                             ->label('End Date')
@@ -83,7 +82,7 @@ class SubscriptionReport extends Page implements HasTable
                                     session()->flash('error', 'End Date must be on or after the Start Date.');
                                 }
                             })
-                            ->helperText('Format: DD/MM/YYYY. Must be on or after the start date.'),
+                            ->helperText('Must be on or after the start date.'),
 
                         Select::make('branch_id')
                             ->label('Branch')
@@ -262,57 +261,103 @@ class SubscriptionReport extends Page implements HasTable
         try {
             $subscriptions = $this->getTableQuery()->get()->sortBy('member.last_name');
 
+            $filename = 'subscription-report-' . now()->format('Y-m-d') . '.xlsx';
+            $filepath = storage_path('app/temp/' . $filename);
+
+            // Ensure temp directory exists
+            if (!file_exists(storage_path('app/temp'))) {
+                mkdir(storage_path('app/temp'), 0755, true);
+            }
+
+            $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+            $sheet = $spreadsheet->getActiveSheet();
+
+            // Headers
             $headers = [
-                'Content-Type'        => 'text/csv',
-                'Content-Disposition' => 'attachment; filename="subscription-report-' . now()->format('Y-m-d') . '.csv"',
+                'ID', 'CID', 'Member Name', 'Branch', 'Email', 'Phone', 'Address',
+                'Age', 'Gender', 'Marital Status', 'Occupation', 'Joined Date',
+                'Insurance', 'Status', 'Account Name', 'Account Number', 'Amount',
+                'Payment Date', 'Expires Date', 'Remark', 'Activated Date',  'Note: Date Format',
             ];
 
-            $callback = function () use ($subscriptions) {
-                $file = fopen('php://output', 'w');
+            foreach ($headers as $colIndex => $header) {
+                $cell = $sheet->getCellByColumnAndRow($colIndex + 1, 1);
+                $cell->setValue($header);
+                $cell->getStyle()->getFont()->setBold(true);
+            }
 
-                fputcsv($file, [
-                    'ID', 'CID', 'Member Name', 'Branch', 'Email', 'Phone', 'Address',
-                    'Age', 'Gender', 'Marital Status', 'Occupation', 'Joined Date',
-                    'Insurance', 'Status', 'Account Name', 'Account Number', 'Amount',
-                    'Payment Date', 'Expires Date', 'Activated Date', 'Note: Date Format',
-                ]);
+            // Amount column index (1-based): 'Amount' is the 17th column
+            $amountColIndex = 17;
 
-                foreach ($subscriptions as $sub) {
-                    $member  = $sub->member;
-                    $account = $sub->productAccount;
-                    $status  = ($member->is_active ?? true) ? $sub->status : 'archived';
+            $rowIndex = 2;
+            foreach ($subscriptions as $sub) {
+                $member  = $sub->member;
+                $account = $sub->productAccount;
+                $status  = ($member->is_active ?? true) ? $sub->status : 'archived';
 
-                    fputcsv($file, [
-                        $member->id,
-                        $member->cid,
-                        $member->full_name,
-                        $member->branch?->branch_name,
-                        $member->email,
-                        $member->contact_number,
-                        $member->full_address,
-                        $member->age,
-                        $member->gender_label,
-                        $member->marital_status_label,
-                        $member->occupation,
-                        $member->created_at->format('m/d/Y'),
-                        $sub->insurance?->insurance_name,
-                        $status,
-                        $account?->product_name,
-                        $account?->account_number,
-                        $sub->amount,
-                        $sub->payment_date?->format('m/d/Y'),
-                        $sub->expires_at?->format('m/d/Y'),
-                        $sub->activated_at?->format('m/d/Y'),
-                        'month/day/Year (12/18/2025)',
-                    ]);
+                $row = [
+                    $member->id,
+                    $member->cid,
+                    $member->full_name,
+                    $member->branch?->branch_name,
+                    $member->email,
+                    $member->contact_number,
+                    $member->full_address,
+                    $member->age,
+                    $member->gender_label,
+                    $member->marital_status_label,
+                    $member->occupation,
+                    $member->created_at->format('m/d/Y'),
+                    $sub->insurance?->insurance_name,
+                    $status,
+                    $account?->product_name,
+                    $account?->account_number,
+                    $sub->amount,
+                    $sub->payment_date?->format('m/d/Y'),
+                    $sub->expires_at?->format('m/d/Y'),
+                    $sub->remark,
+                    $sub->activated_at?->format('m/d/Y'),
+                    'month/day/Year (12/18/2025)',
+                ];
+
+                foreach ($row as $colIndex => $value) {
+                    $sheet->getCellByColumnAndRow($colIndex + 1, $rowIndex)->setValue($value);
                 }
 
-                fclose($file);
-            };
+                // Conditional highlight based on Amount (column 17)
+                $amount = $sub->amount;
 
-            return response()->stream($callback, 200, $headers);
+                if ($amount == 180) {
+                    $color = 'FFFF00'; // Yellow
+                } elseif ($amount == 360) {
+                    $color = '00FF00'; // Green
+                } else {
+                    $color = 'FF0000'; // Red
+                }
+
+                $sheet->getStyleByColumnAndRow($amountColIndex, $rowIndex)
+                    ->getFill()
+                    ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                    ->getStartColor()
+                    ->setARGB($color);
+
+                $rowIndex++;
+            }
+
+            // Auto-size columns
+            foreach (range(1, count($headers)) as $col) {
+                $sheet->getColumnDimensionByColumn($col)->setAutoSize(true);
+            }
+
+            $writer = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
+            $writer->save($filepath);
+
+            return response()->download($filepath, $filename, [
+                'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            ])->deleteFileAfterSend(true);
+
         } catch (\Exception $e) {
-            $this->exportFailedNotification('CSV', $e);
+            $this->exportFailedNotification('Excel', $e);
         }
     }
 

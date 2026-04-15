@@ -131,8 +131,8 @@
                     <td>{{ $sub->insurance->insurance_name ?? 'N/A' }}</td>
                     <td>{{ $sub->productAccount->product_name ?? 'CASH' }}: {{$sub->productAccount->account_number ?? '0'}}</td>
                     <td>₱{{ number_format($sub->amount, 2) }}</td>
+                    <td>{{ $sub->remark ?? 'N/A' }}</td>
                     <td>{{ optional($sub->payment_date)->format('M d, Y') ?? 'N/A' }}</td>
-                    <td>{{ optional($sub->activated_at)->format('M d, Y') ?? 'Pending' }}</td>
                     <td>{{ optional($sub->expires_at)->format('M d, Y') ?? 'N/A' }}</td>
                     <td class="status">{{ $sub->status }}</td>
                 </tr>

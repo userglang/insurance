@@ -249,7 +249,7 @@ class MemberResource extends Resource
                             ->required()
                             ->displayFormat('F j, Y')
                             ->format('Y-m-d')
-                            ->maxDate(now()->subYears(18))
+                            ->maxDate(now()->subYears(17))
                             ->minDate(now()->subYears(100))
                             ->beforeOrEqual('today')
                             ->helperText('Must be at least 18 years old'),
@@ -308,8 +308,7 @@ class MemberResource extends Resource
                             ->maxLength(20)
                             ->mask('9999 999 9999')
                             ->suffixIcon('heroicon-m-phone')
-                            ->rule('regex:/^[\+]?[0-9\s\-\(\)]{7,20}$/')
-                            ->helperText('Include country code if international'),
+                            ->rule('regex:/^[\+]?[0-9\s\-\(\)]{7,20}$/'),
                     ]),
 
                     Forms\Components\Fieldset::make('Address')->schema([
@@ -435,7 +434,7 @@ class MemberResource extends Resource
                             ->placeholder('123-456-789-000')
                             ->maxLength(15)
                             ->rule('regex:/^\d{3}-\d{3}-\d{3}-\d{3}$/')
-                            ->mask('999-999-999-999')
+                            ->mask('999-999-999')
                             ->helperText('Format: XXX-XXX-XXX-XXX'),
                     ]),
                 ]),
@@ -666,7 +665,7 @@ class MemberResource extends Resource
                         Forms\Components\DatePicker::make('expires_until')
                             ->label('Expires Until')
                             ->placeholder('Select end date')
-                            ->default(now()->addMonth()->endOfMonth()),
+                            ->default(now()->subMonth()->endOfMonth()),
                     ])
                     ->query(function (Builder $query, array $data): Builder {
                         $from  = $data['expires_from']  ?? now()->subMonth()->startOfMonth();
