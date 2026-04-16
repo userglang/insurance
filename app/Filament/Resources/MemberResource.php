@@ -699,7 +699,7 @@ class MemberResource extends Resource
                         )
                         ->tooltip(fn (Model $record) => Auth::user()->hasRole('super_admin')
                             ? ($record->is_active ? 'Click to deactivate or mark as deceased this record' : 'Click to activate this record')
-                            : 'Only deactivation is allowed'
+                            : 'Click to deactivate or mark as deceased this record'
                         )
                         ->icon(fn (Model $record) => Auth::user()->hasRole('super_admin')
                             ? ($record->is_active ? 'heroicon-o-x-circle' : 'heroicon-o-check-circle')

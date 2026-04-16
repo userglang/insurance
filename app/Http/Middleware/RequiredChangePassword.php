@@ -81,7 +81,7 @@ class RequiredChangePassword
      */
     private function hasDefaultPassword($user): bool
     {
-        $defaultPasswords = explode(',', env('DEFAULT_PASSWORDS', ''));
+        $defaultPasswords = config('security.default_passwords');
 
         foreach ($defaultPasswords as $defaultPassword) {
             $defaultPassword = trim($defaultPassword);

@@ -12,4 +12,8 @@ return [
 
     // Max failed login attempts (for rate limiting, brute-force protection)
     'max_login_attempts' => env('MAX_LOGIN_ATTEMPTS', 5),
+
+    'default_passwords' => array_filter(
+        array_map('trim', explode(',', env('DEFAULT_PASSWORDS', '')))
+    ),
 ];
