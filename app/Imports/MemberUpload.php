@@ -27,6 +27,29 @@ class MemberUpload implements ToModel, WithHeadingRow, WithChunkReading, ShouldQ
     private const FALLBACK_BIRTH_DATE  = '1900-01-01';
     private const FALLBACK_CREATED_AT  = '2000-01-01 00:00:00';
 
+    /**
+     * Formats tried in order for applicationdate (parseCreatedAt).
+     * Handles: "10/02/2023 10:39", "10/02/2023 10:39:24",
+     *          "2023-02-10 10:39:24", "2023-02-10 10:39"
+     */
+    private const DATETIME_FORMATS = [
+        'd/m/Y H:i',
+        'd/m/Y H:i:s',
+        'Y-m-d H:i:s',
+        'Y-m-d H:i',
+    ];
+
+    /**
+     * Formats tried in order for generic date columns (parseDateColumn).
+     * Handles: "21/02/2024", "2024-02-21", "2024-02-21 10:39:24", "2024-02-21 10:39"
+     */
+    private const DATE_FORMATS = [
+        'd/m/Y',
+        'Y-m-d',
+        'Y-m-d H:i:s',
+        'Y-m-d H:i',
+    ];
+
     // -------------------------------------------------------------------------
     // Import
     // -------------------------------------------------------------------------
@@ -55,39 +78,47 @@ class MemberUpload implements ToModel, WithHeadingRow, WithChunkReading, ShouldQ
 
     private function parseBirthDate(array $row): string
     {
-        $raw = $row['dateofbirth'] ?? '';
+        $raw = trim($row['dateofbirth'] ?? '');
 
         if (empty($raw)) {
             return self::FALLBACK_BIRTH_DATE;
         }
 
-        try {
-            return Carbon::createFromFormat('d/m/Y', $raw)->format('Y-m-d');
-        } catch (\Exception) {
-            return self::FALLBACK_BIRTH_DATE;
+        foreach (self::DATE_FORMATS as $format) {
+            try {
+                return Carbon::createFromFormat($format, $raw)->format('Y-m-d');
+            } catch (\Exception) {
+                continue;
+            }
         }
+
+        $this->logError("Invalid dateofbirth format: {$raw}");
+        return self::FALLBACK_BIRTH_DATE;
     }
 
     private function parseCreatedAt(array $row): Carbon
     {
-        $raw = $row['applicationdate'] ?? '';
+        $raw = trim($row['applicationdate'] ?? '');
 
-        try {
-            if (empty($raw)) {
-                throw new \RuntimeException('Empty applicationdate');
+        if (! empty($raw)) {
+            foreach (self::DATETIME_FORMATS as $format) {
+                try {
+                    $date = Carbon::createFromFormat($format, $raw);
+
+                    if ($date->year > 2038) {
+                        $this->logError("applicationdate exceeds 2038: {$date->toDateTimeString()} | Raw: {$raw}");
+                        break;
+                    }
+
+                    return $date;
+                } catch (\Exception) {
+                    continue;
+                }
             }
-
-            $date = Carbon::createFromFormat('d/m/Y H:i', $raw);
-
-            if ($date->year > 2038) {
-                throw new \RuntimeException("applicationdate exceeds 2038: {$date->toDateTimeString()}");
-            }
-
-            return $date;
-        } catch (\Exception $e) {
-            $this->logError("Using fallback applicationDate due to: {$e->getMessage()} | Raw: {$raw}");
-            return Carbon::parse(self::FALLBACK_CREATED_AT);
         }
+
+        $this->logError("Using fallback applicationDate — no matching format | Raw: {$raw}");
+        return Carbon::parse(self::FALLBACK_CREATED_AT);
     }
 
     private function parseEmail(array $row): ?string
@@ -101,21 +132,33 @@ class MemberUpload implements ToModel, WithHeadingRow, WithChunkReading, ShouldQ
         return Member::where('email', $email)->exists() ? null : $email;
     }
 
-    private function parseDateColumn(array $row, string $column, string $format = 'd/m/Y'): ?Carbon
+    /**
+     * Parse a date/datetime column using multiple format fallbacks.
+     *
+     * @param  array  $row
+     * @param  string $column   Row key to read
+     * @param  array  $formats  Ordered list of Carbon format strings to try.
+     *                          Defaults to DATE_FORMATS (handles d/m/Y and Y-m-d variants).
+     */
+    private function parseDateColumn(array $row, string $column, array $formats = self::DATE_FORMATS): ?Carbon
     {
-        $raw = $row[$column] ?? '';
+        $raw = trim($row[$column] ?? '');
 
         if (empty($raw)) {
             $this->logError("Missing {$column} in row: " . json_encode($row));
             return null;
         }
 
-        try {
-            return Carbon::createFromFormat($format, $raw);
-        } catch (\Exception) {
-            $this->logError("Invalid {$column} format: {$raw}");
-            return null;
+        foreach ($formats as $format) {
+            try {
+                return Carbon::createFromFormat($format, $raw);
+            } catch (\Exception) {
+                continue;
+            }
         }
+
+        $this->logError("Invalid {$column} format: {$raw}");
+        return null;
     }
 
     // -------------------------------------------------------------------------
@@ -181,11 +224,13 @@ class MemberUpload implements ToModel, WithHeadingRow, WithChunkReading, ShouldQ
 
     private function createSubscription(Member $member, ProductAccount $account, array $row): ?bool
     {
+        // subscription_date: handles "21/02/2024" and "2024-02-21"
         $subscriptionDate = $this->parseDateColumn($row, 'subscription_date');
         if (! $subscriptionDate) return null;
 
-        $rawPaymentDate = explode(' ', $row['date_time'] ?? '')[0] ?? '';
-        $paymentDate = $this->parseDateColumn(['date_time' => $rawPaymentDate], 'date_time');
+        // date_time: pass raw value directly; parseDateColumn handles both
+        // datetime ("2023-02-10 10:39:24") and date-only ("2023-02-10") formats
+        $paymentDate = $this->parseDateColumn($row, 'date_time', self::DATETIME_FORMATS);
         if (! $paymentDate) return null;
 
         try {
@@ -255,10 +300,10 @@ class MemberUpload implements ToModel, WithHeadingRow, WithChunkReading, ShouldQ
 
             AfterImport::class => function (): void {
                 Log::info('Member Upload Import Summary', [
-                    'total_rows'      => self::$totalRows,
-                    'inserted'        => self::$insertedMembers,
-                    'skipped'         => self::$skippedMembers,
-                    'errors'          => self::$errors,
+                    'total_rows' => self::$totalRows,
+                    'inserted'   => self::$insertedMembers,
+                    'skipped'    => self::$skippedMembers,
+                    'errors'     => self::$errors,
                 ]);
 
                 if (! empty(self::$errorDetails)) {
