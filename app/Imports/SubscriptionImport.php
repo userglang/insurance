@@ -281,7 +281,7 @@ class SubscriptionImport implements ToCollection, WithHeadingRow
     private function hasActiveSubscription(string $memberId): bool
     {
         return Subscription::where('member_id', $memberId)
-            ->where('expires_at', '>', now()->addMonths(2))
+            ->where('expires_at', '>', now()->addMonths(3))
             ->exists();
     }
 

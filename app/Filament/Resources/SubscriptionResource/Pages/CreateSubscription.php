@@ -61,7 +61,7 @@ class CreateSubscription extends CreateRecord
     {
         $hasActiveSubscription = Subscription::query()
             ->where('member_id', $memberId)
-            ->where('expires_at', '>=', now())
+            ->where('expires_at', '>', now()->addMonths(2))
             ->exists();
 
         if ($hasActiveSubscription) {

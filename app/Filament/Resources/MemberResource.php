@@ -208,7 +208,8 @@ class MemberResource extends Resource
                             ->required()
                             ->helperText('Select the branch this client belongs to')
                             ->default(fn () => ! $isSuperAdmin ? $user?->branch->branch_number : null)
-                            ->disabled(! $isSuperAdmin),
+                            ->disabled(! $isSuperAdmin)
+                            ->dehydrated(),
                     ]),
 
                     Forms\Components\Grid::make(3)->schema([

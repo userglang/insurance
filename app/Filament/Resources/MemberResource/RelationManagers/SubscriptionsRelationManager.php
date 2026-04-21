@@ -218,7 +218,7 @@ class SubscriptionsRelationManager extends RelationManager
                         // Check if the member already has an active subscription
                         $hasActiveSubscription = Subscription::query()
                             ->where('member_id', $memberId)
-                            ->where('expires_at', '>=', now())
+                            ->where('expires_at', '>=', now()->addMonths(3))
                             ->exists();
 
                         // If an active subscription exists, show a notification and halt the action
