@@ -50,7 +50,7 @@ class Subscription extends Model
             // Check if the member already has an active subscription
             $hasActiveSubscription = Subscription::query()
                 ->where('member_id', $model->member_id)
-                ->where('expires_at', '>=', now())
+                ->where('expires_at', '>=', now()->addMonths(3))
                 ->exists();
 
             if ($hasActiveSubscription) {

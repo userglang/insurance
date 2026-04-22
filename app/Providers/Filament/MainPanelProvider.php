@@ -85,9 +85,9 @@ class MainPanelProvider extends PanelProvider
             ->authMiddleware([
                 Authenticate::class,
                 RequiredChangePassword::class,
-                BusinessHoursAccess::class,
+                // BusinessHoursAccess::class,
                 RestrictToPhilippines::class,
-                'required.password.change',
+                // 'required.password.change',
             ])
             ->spa()
             ->unsavedChangesAlerts();

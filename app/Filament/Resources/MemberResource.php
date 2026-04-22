@@ -432,10 +432,9 @@ class MemberResource extends Resource
 
                         Forms\Components\TextInput::make('tin')
                             ->label('TIN Number')
-                            ->placeholder('123-456-789-000')
-                            ->maxLength(15)
-                            ->rule('regex:/^\d{3}-\d{3}-\d{3}-\d{3}$/')
-                            ->mask('999-999-999')
+                            ->placeholder('123-456-789')
+                            ->maxLength(20)
+                            ->mask('999-999-999-999')
                             ->helperText('Format: XXX-XXX-XXX'),
                     ]),
                 ]),
