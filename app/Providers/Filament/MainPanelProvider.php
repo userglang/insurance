@@ -87,7 +87,7 @@ class MainPanelProvider extends PanelProvider
                 RequiredChangePassword::class,
                 BusinessHoursAccess::class,
                 RestrictToPhilippines::class,
-                // 'required.password.change',
+                'required.password.change',
             ])
             ->spa()
             ->unsavedChangesAlerts();

@@ -436,7 +436,7 @@ class MemberResource extends Resource
                             ->maxLength(15)
                             ->rule('regex:/^\d{3}-\d{3}-\d{3}-\d{3}$/')
                             ->mask('999-999-999')
-                            ->helperText('Format: XXX-XXX-XXX-XXX'),
+                            ->helperText('Format: XXX-XXX-XXX'),
                     ]),
                 ]),
         ];
@@ -828,6 +828,10 @@ class MemberResource extends Resource
 
                             foreach (range(1, $totalColumns) as $colIndex) {
                                 $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($colIndex);
+
+                                // Skip Amount column (index 18 = column R) — keep it numeric
+                                if ($colIndex === 18) continue;
+
                                 $sheet->getStyle("{$colLetter}1:{$colLetter}{$totalRows}")
                                     ->getNumberFormat()
                                     ->setFormatCode(\PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_TEXT);
@@ -857,7 +861,7 @@ class MemberResource extends Resource
                                     (string) $record->created_at->format('m/d/Y'),
                                     (string) ($sub?->productAccount?->product_name ?? ''),
                                     (string) ($sub?->productAccount?->account_number ?? ''),
-                                    (string) ($sub?->amount ?? ''),
+                                    $sub?->amount ?? 0, // ← numeric for summability
                                     '',
                                     (string) ($sub?->expires_at?->format('m/d/Y') ?? ''),
                                     'RENEWAL',
@@ -866,11 +870,20 @@ class MemberResource extends Resource
 
                                 foreach ($rowData as $colIndex => $value) {
                                     $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($colIndex + 1);
-                                    $sheet->setCellValueExplicit(
-                                        "{$colLetter}{$row}",
-                                        $value,
-                                        \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING
-                                    );
+
+                                    // Amount column (index 17 = column R) — write as numeric
+                                    if ($colIndex === 17) {
+                                        $sheet->setCellValue("{$colLetter}{$row}", $value);
+                                        $sheet->getStyle("{$colLetter}{$row}")
+                                            ->getNumberFormat()
+                                            ->setFormatCode('#,##0.00');
+                                    } else {
+                                        $sheet->setCellValueExplicit(
+                                            "{$colLetter}{$row}",
+                                            $value,
+                                            \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING
+                                        );
+                                    }
                                 }
 
                                 // Highlight entire row based on age
@@ -901,7 +914,7 @@ class MemberResource extends Resource
                                         ->setARGB('FFFFFFFF');
                                 }
 
-                                // Highlight Amount column (Q) yellow if not 180 or 360
+                                // Highlight Amount column (R) yellow if not 180 or 360
                                 $amount       = (float) ($sub?->amount ?? 0);
                                 $validAmounts = [180, 360];
 
@@ -920,6 +933,17 @@ class MemberResource extends Resource
 
                                 $row++;
                             }
+
+                            // SUM row at the bottom
+                            $sumRow = $row;
+                            $sheet->setCellValueExplicit("A{$sumRow}", 'TOTAL', \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+                            $sheet->setCellValue("R{$sumRow}", "=SUM(R2:R" . ($sumRow - 1) . ")");
+                            $sheet->getStyle("R{$sumRow}")
+                                ->getNumberFormat()
+                                ->setFormatCode('#,##0.00');
+                            $sheet->getStyle("A{$sumRow}:R{$sumRow}")
+                                ->getFont()
+                                ->setBold(true);
 
                             $filename = 'pre-need_export-' . now()->format('Y-m-d-H-i-s') . '.xlsx';
                             $writer   = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
