@@ -100,6 +100,7 @@ class SubscriptionImport implements ToCollection, WithHeadingRow
             'payment_date'       => $paymentDate,
             'activated_at'       => $paymentDate,
             'expires_at'         => $subscriptionDate?->copy()->addYear(),
+            'remark'             => $fields['remark'] ?: null,
         ]);
 
         $this->insertedCount++;
@@ -125,6 +126,7 @@ class SubscriptionImport implements ToCollection, WithHeadingRow
             'amount'                => $row['amount'] ?? null,
             'payment_date_raw'      => $this->normalizeDate($row['payment_date'] ?? null),
             'subscription_date_raw' => $this->normalizeDate($row['subscription_date'] ?? null),
+            'remark'                => strip_tags(trim($row['remarks'] ?? '')),
         ];
     }
 

@@ -239,6 +239,11 @@ class SubscriptionResource extends Resource
                         : 'No Account'
                     ),
 
+                Tables\Columns\TextColumn::make('payment_date')
+                    ->label('Payment Date')
+                    ->dateTime('M j, Y')
+                    ->weight(FontWeight::Medium),
+
                 Tables\Columns\TextColumn::make('activated_at')
                     ->label('Activated')
                     ->dateTime('M j, Y')
@@ -283,6 +288,43 @@ class SubscriptionResource extends Resource
             // Filters
             // -----------------------------------------------------------------
             ->filters([
+                Filter::make('payment_date_range')
+                    ->label('Payment Date Range')
+                    ->form([
+                        Forms\Components\DatePicker::make('payment_from')
+                            ->label('Payments From')
+                            ->placeholder('Select start date')
+                            ->default(now()->subMonth()->startOfMonth()),
+
+                        Forms\Components\DatePicker::make('payment_until')
+                            ->label('Payments Until')
+                            ->placeholder('Select end date')
+                            ->default(now()->subMonth()->endOfMonth()),
+                    ])
+                    ->query(function (Builder $query, array $data): Builder {
+                        return $query
+                            ->when(
+                                $data['payment_from'],
+                                fn (Builder $q, $date) => $q->whereDate('payment_date', '>=', $date)
+                            )
+                            ->when(
+                                $data['payment_until'],
+                                fn (Builder $q, $date) => $q->whereDate('payment_date', '<=', $date)
+                            );
+                    })
+                    ->indicateUsing(function (array $data): array {
+                        $indicators = [];
+
+                        if ($data['payment_from'] ?? null) {
+                            $indicators[] = 'Payments from: ' . \Carbon\Carbon::parse($data['payment_from'])->format('M j, Y');
+                        }
+
+                        if ($data['payment_until'] ?? null) {
+                            $indicators[] = 'Payments until: ' . \Carbon\Carbon::parse($data['payment_until'])->format('M j, Y');
+                        }
+
+                        return $indicators;
+                    }),
                 SelectFilter::make('status')
                     ->options([
                         'active'  => 'Active',
@@ -351,7 +393,143 @@ class SubscriptionResource extends Resource
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
                     Tables\Actions\DeleteBulkAction::make(),
+                    Tables\Actions\BulkAction::make('export')
+                    ->label('Export Selected')
+                    ->icon('heroicon-o-document-arrow-down')
+                    ->color('info')
+                    ->action(function (\Illuminate\Support\Collection $records) {
+                        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+                        $sheet       = $spreadsheet->getActiveSheet();
+
+                        $headers = [
+                            'ID', 'CID', 'Name', 'Branch', 'Email', 'Phone', 'Address',
+                            'Age', 'Birth Date', 'Gender', 'Marital Status', 'Occupation', 'Employment Status',
+                            'Status', 'Joined Date', 'Account Name', 'Account Number', 'Amount',
+                            'Payment Date', 'Subscription Date', 'Remarks', 'Note: Date Format',
+                        ];
+
+                        $sheet->fromArray($headers, null, 'A1');
+
+                        $totalColumns = count($headers);
+                        $totalRows    = $records->count() + 1;
+
+                        // Set all columns to text except Amount (col R = index 18)
+                        foreach (range(1, $totalColumns) as $colIndex) {
+                            $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($colIndex);
+
+                            if ($colIndex === 18) continue; // Skip Amount — keep numeric
+
+                            $sheet->getStyle("{$colLetter}1:{$colLetter}{$totalRows}")
+                                ->getNumberFormat()
+                                ->setFormatCode(\PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_TEXT);
+                        }
+
+                        $lastColumn = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($totalColumns);
+
+                        $row = 2;
+                        foreach ($records->sortBy(fn ($r) => $r->member?->last_name) as $record) {
+                            $member  = $record->member;
+                            $account = $record->productAccount;
+
+                            $rowData = [
+                                (string) $record->id,                                               // A - ID
+                                (string) ($member?->cid ?? ''),                                     // B - CID
+                                (string) ($member?->full_name ?? ''),                               // C - Name
+                                (string) ($member?->branch?->branch_name ?? 'N/A'),                 // D - Branch
+                                (string) ($member?->email ?? ''),                                   // E - Email
+                                (string) ($member?->contact_number ?? ''),                          // F - Phone
+                                (string) ($member?->full_address ?? ''),                            // G - Address
+                                (string) ($member?->age ?? ''),                                     // H - Age
+                                (string) ($member?->birth_date?->format('m/d/Y') ?? ''),            // I - Birth Date
+                                (string) ($member?->gender ?? ''),                                  // J - Gender
+                                (string) ($member?->marital_status ?? ''),                          // K - Marital Status
+                                (string) ($member?->occupation ?? ''),                              // L - Occupation
+                                (string) ($member?->employment_status ?? ''),                       // M - Employment Status
+                                (string) (ucfirst($record->status ?? '')),                          // N - Status
+                                (string) ($member?->created_at?->format('m/d/Y') ?? ''),            // O - Joined Date
+                                (string) (strtoupper($account?->product_name ?? '')),               // P - Account Name
+                                (string) ($account?->account_number ?? ''),                         // Q - Account Number
+                                $record->amount ?? 0,                                               // R - Amount (numeric)
+                                '',           // S - Payment Date
+                                (string) ($record->activated_at?->format('m/d/Y') ?? ''),           // T - Subscription Date
+                                '',                                                                 // U - Remarks
+                                'month/day/Year (12/18/2025)',                                      // V - Note: Date Format
+                            ];
+
+                            foreach ($rowData as $colIndex => $value) {
+                                $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($colIndex + 1);
+
+                                // Amount column (index 17 = col R) — write as numeric
+                                if ($colIndex === 17) {
+                                    $sheet->setCellValue("{$colLetter}{$row}", $value);
+                                    $sheet->getStyle("{$colLetter}{$row}")
+                                        ->getNumberFormat()
+                                        ->setFormatCode('#,##0.00');
+                                } else {
+                                    $sheet->setCellValueExplicit(
+                                        "{$colLetter}{$row}",
+                                        $value,
+                                        \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING
+                                    );
+                                }
+                            }
+
+                            // Row highlight by member age (mirrors MemberResource exactly)
+                            $age = (int) ($member?->age ?? 0);
+
+                            if ($age >= 70) {
+                                $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
+                                    ->getFill()->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                                    ->getStartColor()->setARGB('FFFF0000');
+                                $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
+                                    ->getFont()->getColor()->setARGB('FFFFFFFF');
+
+                            } elseif ($age >= 65) {
+                                $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
+                                    ->getFill()->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                                    ->getStartColor()->setARGB('FFFF6600');
+                                $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
+                                    ->getFont()->getColor()->setARGB('FFFFFFFF');
+                            }
+
+                            // Highlight Amount (col R) yellow if not 180 or 360
+                            $amount       = (float) ($record->amount ?? 0);
+                            $validAmounts = [180, 360];
+
+                            if (! in_array($amount, $validAmounts)) {
+                                $sheet->getStyle("R{$row}")
+                                    ->getFill()->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                                    ->getStartColor()->setARGB('FFFFFF00');
+                                $sheet->getStyle("R{$row}")
+                                    ->getFont()->getColor()->setARGB('FF000000');
+                            }
+
+                            $row++;
+                        }
+
+                        // SUM row at the bottom — col R matches MemberResource exactly
+                        $sumRow = $row;
+                        $sheet->setCellValueExplicit(
+                            "A{$sumRow}", 'TOTAL',
+                            \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING
+                        );
+                        $sheet->setCellValue("R{$sumRow}", "=SUM(R2:R" . ($sumRow - 1) . ")");
+                        $sheet->getStyle("R{$sumRow}")
+                            ->getNumberFormat()->setFormatCode('#,##0.00');
+                        $sheet->getStyle("A{$sumRow}:{$lastColumn}{$sumRow}")
+                            ->getFont()->setBold(true);
+
+                        $filename = 'subscriptions_export-' . now()->format('Y-m-d-H-i-s') . '.xlsx';
+                        $writer   = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
+
+                        return response()->streamDownload(function () use ($writer) {
+                            $writer->save('php://output');
+                        }, $filename, [
+                            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        ]);
+                    }),
                 ]),
+
             ])
 
             // -----------------------------------------------------------------

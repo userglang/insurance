@@ -143,6 +143,11 @@ class Member extends Model
         return $this->hasOne(Subscription::class)->latestOfMany('expires_at');
     }
 
+    public function latestPayment()
+    {
+        return $this->hasOne(Subscription::class)->latestOfMany('payment_date');
+    }
+
 
     public function latestActiveSubscription()
     {
