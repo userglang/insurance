@@ -58,13 +58,18 @@ class ListMembers extends ListRecords
                     ->disk('local')
                     ->directory('uploads')
                     ->maxSize(40960),
+
+                Toggle::make('update_existing')
+                    ->label('Update existing records')
+                    ->helperText('If enabled, member info and subscription details will be overwritten when a duplicate is found.')
+                    ->default(false),
             ])
             ->modalHeading('Upload Voucher CSV')
             ->modalButton('Upload')
             ->action(function (array $data): void {
                 try {
                     $path = Storage::disk('local')->path($data['file']);
-                    Excel::import(new MemberUpload, $path);
+                    Excel::import(new MemberUpload((bool) ($data['update_existing'] ?? false)), $path);
 
                     Notification::make()
                         ->title('Upload Successful')
@@ -115,10 +120,10 @@ class ListMembers extends ListRecords
                     ->disk('local')
                     ->directory('subscription')
                     ->acceptedFileTypes([
-                                    'application/vnd.ms-excel',
-                                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                                    'text/csv',
-                                ])
+                        'application/vnd.ms-excel',
+                        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        'text/csv',
+                    ])
                     ->rules(['file', 'mimes:csv,xls,xlsx'])
                     ->hint('CSV file only (max 10MB)'),
             ])
@@ -197,8 +202,8 @@ class ListMembers extends ListRecords
             return null;
         }
 
-        $label = ucfirst($type);
-        $path  = "exports/{$type}_" . now()->format('Ymd_His') . '.xlsx';
+        $label  = ucfirst($type);
+        $path   = "exports/{$type}_" . now()->format('Ymd_His') . '.xlsx';
         $stored = Excel::store(new SubscriptionImportIssuesExport($rows, $label), $path, 'local');
 
         if (! $stored) {

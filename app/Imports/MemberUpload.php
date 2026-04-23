@@ -17,11 +17,12 @@ use Maatwebsite\Excel\Events\BeforeImport;
 
 class MemberUpload implements ToModel, WithHeadingRow, WithChunkReading, ShouldQueue, WithEvents
 {
-    protected static int   $totalRows        = 0;
-    protected static int   $insertedMembers  = 0;
-    protected static int   $skippedMembers   = 0;
-    protected static int   $errors           = 0;
-    protected static array $errorDetails     = [];
+    protected static int   $totalRows       = 0;
+    protected static int   $insertedMembers = 0;
+    protected static int   $updatedMembers  = 0;
+    protected static int   $skippedMembers  = 0;
+    protected static int   $errors          = 0;
+    protected static array $errorDetails    = [];
 
     private const DEFAULT_INSURANCE_ID = '117cf002-ee7d-4284-a1d9-19d052fb237e';
     private const FALLBACK_BIRTH_DATE  = '1900-01-01';
@@ -51,6 +52,17 @@ class MemberUpload implements ToModel, WithHeadingRow, WithChunkReading, ShouldQ
     ];
 
     // -------------------------------------------------------------------------
+    // Constructor
+    // -------------------------------------------------------------------------
+
+    /**
+     * @param bool $updateExisting When true, existing member info and
+     *                             subscription details will be overwritten
+     *                             on duplicate rows instead of being skipped.
+     */
+    public function __construct(private bool $updateExisting = false) {}
+
+    // -------------------------------------------------------------------------
     // Import
     // -------------------------------------------------------------------------
 
@@ -60,14 +72,14 @@ class MemberUpload implements ToModel, WithHeadingRow, WithChunkReading, ShouldQ
 
         $row = array_change_key_case($row, CASE_LOWER);
 
-        $birthDate  = $this->parseBirthDate($row);
-        $createdAt  = $this->parseCreatedAt($row);
-        $email      = $this->parseEmail($row);
+        $birthDate = $this->parseBirthDate($row);
+        $createdAt = $this->parseCreatedAt($row);
+        $email     = $this->parseEmail($row);
 
-        $member     = $this->firstOrCreateMember($row, $birthDate, $createdAt, $email);
-        $account    = $this->firstOrCreateProductAccount($member, $row);
+        $member  = $this->firstOrCreateMember($row, $birthDate, $createdAt, $email);
+        $account = $this->firstOrCreateProductAccount($member, $row);
 
-        $subscription = $this->createSubscription($member, $account, $row);
+        $subscription = $this->createOrUpdateSubscription($member, $account, $row);
 
         return $subscription ? $member : null;
     }
@@ -174,7 +186,35 @@ class MemberUpload implements ToModel, WithHeadingRow, WithChunkReading, ShouldQ
             ->first();
 
         if ($existing) {
-            self::$skippedMembers++;
+            if ($this->updateExisting) {
+                $existing->update([
+                    'cid'                   => $row['cid'] ?? $existing->cid,
+                    'branch_number'         => $row['branch_id'] ?? $existing->branch_number,
+                    'email'                 => $email ?? $existing->email,
+                    'gender'                => $this->parseGender($row),
+                    'sss_gsis'              => $row['sss/gsis'] ?? $existing->sss_gsis,
+                    'tin'                   => $row['tin'] ?? $existing->tin,
+                    'occupation'            => $row['occupation'] ?? $existing->occupation,
+                    'office_contact_number' => $row['office_number'] ?? $existing->office_contact_number,
+                    'name_of_employer'      => $row['nameofemployer'] ?? $existing->name_of_employer,
+                    'employment_status'     => $row['employment_status'] ?? $existing->employment_status,
+                    'office_address'        => $row['office_address'] ?? $existing->office_address,
+                    'house_number'          => $row['house_number'] ?? $existing->house_number,
+                    'street'                => $row['street'] ?? $existing->street,
+                    'barangay'              => $row['barangay'] ?? $existing->barangay,
+                    'city'                  => $row['city'] ?? $existing->city,
+                    'province'              => $row['province'] ?? $existing->province,
+                    'zipcode'               => $row['zipcode'] ?? $existing->zipcode,
+                    'contact_number'        => $row['contact_number'] ?? $existing->contact_number,
+                    'remark'                => $row['remark'] ?? $existing->remark,
+                    'is_active'             => ($row['active'] ?? '') === 'Active',
+                ]);
+
+                self::$updatedMembers++;
+            } else {
+                self::$skippedMembers++;
+            }
+
             return $existing;
         }
 
@@ -222,18 +262,35 @@ class MemberUpload implements ToModel, WithHeadingRow, WithChunkReading, ShouldQ
         );
     }
 
-    private function createSubscription(Member $member, ProductAccount $account, array $row): ?bool
+    private function createOrUpdateSubscription(Member $member, ProductAccount $account, array $row): ?bool
     {
         // subscription_date: handles "21/02/2024" and "2024-02-21"
         $subscriptionDate = $this->parseDateColumn($row, 'subscription_date');
         if (! $subscriptionDate) return null;
 
-        // date_time: pass raw value directly; parseDateColumn handles both
-        // datetime ("2023-02-10 10:39:24") and date-only ("2023-02-10") formats
+        // date_time: handles datetime ("2023-02-10 10:39:24") and date-only formats
         $paymentDate = $this->parseDateColumn($row, 'date_time', self::DATETIME_FORMATS);
         if (! $paymentDate) return null;
 
         try {
+            $existing = Subscription::where('member_id', $member->id)
+                ->where('product_account_id', $account->id)
+                ->whereDate('activated_at', $subscriptionDate->toDateString())
+                ->first();
+
+            if ($existing) {
+                if ($this->updateExisting) {
+                    $existing->update([
+                        'amount'       => $row['amount'] ?? $existing->amount,
+                        'payment_date' => $paymentDate,
+                        'expires_at'   => $subscriptionDate->copy()->addYear(),
+                        'remark'       => $row['remarks'] ?? $existing->remark,
+                    ]);
+                }
+                // Whether updating or not, skip creating a new duplicate
+                return true;
+            }
+
             Subscription::create([
                 'member_id'          => $member->id,
                 'product_account_id' => $account->id,
@@ -293,6 +350,7 @@ class MemberUpload implements ToModel, WithHeadingRow, WithChunkReading, ShouldQ
             BeforeImport::class => function (): void {
                 self::$totalRows       = 0;
                 self::$insertedMembers = 0;
+                self::$updatedMembers  = 0;
                 self::$skippedMembers  = 0;
                 self::$errors          = 0;
                 self::$errorDetails    = [];
@@ -302,6 +360,7 @@ class MemberUpload implements ToModel, WithHeadingRow, WithChunkReading, ShouldQ
                 Log::info('Member Upload Import Summary', [
                     'total_rows' => self::$totalRows,
                     'inserted'   => self::$insertedMembers,
+                    'updated'    => self::$updatedMembers,
                     'skipped'    => self::$skippedMembers,
                     'errors'     => self::$errors,
                 ]);
