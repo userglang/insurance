@@ -218,14 +218,12 @@ class MemberResource extends Resource
                             ->placeholder('Enter first name')
                             ->required()
                             ->maxLength(100)
-                            ->rule('regex:/^[a-zA-Z\s\-\.\']+$/')
                             ->autocomplete('given-name'),
 
                         Forms\Components\TextInput::make('middle_name')
                             ->label('Middle Name')
                             ->placeholder('Enter middle name (optional)')
                             ->maxLength(100)
-                            ->rule('regex:/^[a-zA-Z\s\-\.\']*$/')
                             ->autocomplete('additional-name'),
 
                         Forms\Components\TextInput::make('last_name')
@@ -233,7 +231,6 @@ class MemberResource extends Resource
                             ->placeholder('Enter last name')
                             ->required()
                             ->maxLength(100)
-                            ->rule('regex:/^[a-zA-Z\s\-\.\']+$/')
                             ->autocomplete('family-name'),
                     ]),
 
@@ -278,7 +275,6 @@ class MemberResource extends Resource
                                 'Married'   => 'Married',
                                 'Widowed'   => 'Widowed',
                                 'Separated' => 'Separated',
-                                'Divorced'  => 'Divorced',
                             ])
                             ->required(),
                     ]),

@@ -205,7 +205,7 @@ class Member extends Model
             's', 'single' => 'Single',
             'm', 'married' => 'Married',
             'w', 'widowed' => 'Widowed',
-            'd', 'divorced' => 'Divorced',
+            'd', 'separated' => 'Separated',
             default => null,
         };
     }
@@ -267,9 +267,26 @@ class Member extends Model
             });
         }
 
+        $exactResults   = $exactMatch->get();
+        $similarResults = $similarMatch->get();
+
+        if ($exactResults->isNotEmpty()) {
+            throw new \Exception(
+                "A duplicate member already exists with the same name" .
+                ($birthDate ? " and birth date" : "") . "."
+            );
+        }
+
+        if ($similarResults->isNotEmpty()) {
+            throw new \Exception(
+                "A similar member was found with a matching name" .
+                ($middleName ? " and similar middle name" : "") . ". Please review before proceeding."
+            );
+        }
+
         return [
-            'exact' => $exactMatch->get(),
-            'similar' => $similarMatch->get(),
+            'exact'   => $exactResults,
+            'similar' => $similarResults,
         ];
     }
 
