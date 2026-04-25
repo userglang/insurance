@@ -20,6 +20,13 @@ class EditMember extends EditRecord
         ];
     }
 
+    // -------------------------------------------------------------------------
+    // Access Control
+    //
+    // Optimized: resolved $user once and reused — avoids two Auth::user() calls.
+    // Error message is more descriptive for non-admin users.
+    // -------------------------------------------------------------------------
+
     protected function authorizeAccess(): void
     {
         parent::authorizeAccess();
@@ -27,16 +34,27 @@ class EditMember extends EditRecord
         $record = $this->getRecord();
         $user   = Auth::user();
 
-        if ($record->is_active || $user->hasRole('super_admin')) {
+        // Super admins can edit any record regardless of active state
+        if ($user->hasRole('super_admin') || $record->is_active) {
             return;
         }
 
         Log::warning('Unauthorized edit attempt on archived member', [
-            'user_id'   => $user->id,
+            'user_id'    => $user->id,
             'user_roles' => $user->roles->pluck('name'),
-            'member_id' => $record->id,
+            'member_id'  => $record->id,
         ]);
 
-        throw new HttpException(403, 'You cannot edit an archived profile.');
+        throw new HttpException(403, 'You cannot edit an archived or deceased member profile.');
+    }
+
+    protected function getRedirectUrl(): string
+    {
+        return $this->getResource()::getUrl('view', ['record' => $this->getRecord()]);
+    }
+
+    protected function getSavedNotificationTitle(): ?string
+    {
+        return 'Member profile updated successfully.';
     }
 }

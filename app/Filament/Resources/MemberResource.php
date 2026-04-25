@@ -37,33 +37,48 @@ class MemberResource extends Resource
 
     public static function getNavigationBadge(): ?string
     {
-        return Cache::remember('member_navigation_badge_' . Auth::id(), 300, function () {
-            $user = Auth::user();
+        $user = Auth::user();
 
-            $query = DB::table('members as m')
-                ->leftJoin('subscriptions as s', function ($join) {
-                    $join->on('m.id', '=', 's.member_id')
-                        ->whereRaw('s.id = (SELECT id FROM subscriptions WHERE member_id = m.id ORDER BY expires_at DESC LIMIT 1)');
-                })
-                ->where('m.is_active', true)
-                ->where('m.status', 'accepted');
+        return Cache::remember(
+            'member_navigation_badge_' . ($user?->id ?? 'guest'),
+            300,
+            function () use ($user) {
 
-            if ($user && ! $user->hasRole('super_admin')) {
-                if (! $user->branch?->branch_number) {
-                    return null;
+                $query = DB::table('members as m')
+                    ->leftJoin('subscriptions as s', function ($join) {
+                        $join->on('m.id', '=', 's.member_id')
+                            ->whereRaw('s.id = (
+                                SELECT id FROM subscriptions
+                                WHERE member_id = m.id
+                                ORDER BY expires_at DESC
+                                LIMIT 1
+                            )');
+                    })
+                    ->where('m.is_active', true)
+                    ->where('m.status', 'accepted');
+
+                // Restrict by branch (non-admin)
+                if ($user && ! $user->hasRole('super_admin')) {
+                    $branchNumber = $user->branch?->branch_number;
+
+                    if (! $branchNumber) {
+                        return null;
+                    }
+
+                    $query->where('m.branch_number', $branchNumber);
                 }
-                $query->where('m.branch_number', $user->branch->branch_number);
+
+                $counts = $query->selectRaw('
+                    COUNT(CASE WHEN s.expires_at BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 30 DAY) THEN 1 END) as expiring_soon,
+                    COUNT(CASE WHEN s.expires_at < NOW() THEN 1 END) as expired
+                ')->first();
+
+                $total = (int) ($counts->expiring_soon ?? 0)
+                       + (int) ($counts->expired ?? 0);
+
+                return $total > 0 ? (string) $total : null;
             }
-
-            $counts = $query->selectRaw('
-                COUNT(CASE WHEN s.expires_at BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 30 DAY) THEN 1 END) as expiring_soon,
-                COUNT(CASE WHEN s.expires_at < NOW() THEN 1 END) as expired
-            ')->first();
-
-            $total = ($counts->expiring_soon ?? 0) + ($counts->expired ?? 0);
-
-            return $total > 0 ? (string) $total : null;
-        });
+        );
     }
 
     public static function getNavigationBadgeColor(): ?string
@@ -85,25 +100,42 @@ class MemberResource extends Resource
         $user = Auth::user();
 
         $query = parent::getGlobalSearchEloquentQuery()
-            ->select(['id', 'cid', 'first_name', 'last_name', 'branch_number', 'is_active'])
-            ->orderByDesc('is_active', 'last_name')
+            ->select([
+                'id',
+                'cid',
+                'first_name',
+                'last_name',
+                'birth_date',
+                'branch_number',
+                'is_active',
+            ])
             ->with([
                 'branch:id,branch_number,branch_name',
                 'subscriptions' => fn ($q) => $q
-                    ->select(['id', 'member_id', 'expires_at'])
-                    ->orderByDesc('expires_at')
+                    ->select([
+                        'id',
+                        'member_id',
+                        'expires_at',
+                        'payment_date',
+                        'amount',
+                    ])
+                    ->latest('expires_at') // or use 'expires_at' if preferred
                     ->limit(1),
             ])
+            ->orderByDesc('is_active')
+            ->orderBy('last_name')
             ->limit(5);
 
+        // Restrict for non-admin
         if ($user && ! $user->hasRole('super_admin')) {
-            if ($user->branch?->branch_number) {
-                $query->where('branch_number', $user->branch->branch_number);
-            } else {
-                $query->whereNull('branch_number');
-            }
+            $branchNumber = $user->branch?->branch_number;
 
-            $query->where('is_active', true);
+            $query->where('is_active', true)
+                ->when(
+                    $branchNumber,
+                    fn ($q) => $q->where('branch_number', $branchNumber),
+                    fn ($q) => $q->whereNull('branch_number')
+                );
         }
 
         return $query;
@@ -116,19 +148,38 @@ class MemberResource extends Resource
 
     public static function getGlobalSearchResultDetails(Model $record): array
     {
-        $expires = $record->subscriptions->first()?->expires_at;
+        $subscription = $record->subscriptions->first();
 
+        $expires = $subscription?->expires_at;
+        $payment = $subscription?->payment_date;
+        $amount  = $subscription?->amount;
+
+        // Payment Date
+        $paymentStatus = match (true) {
+            ! $payment => 'No Payment Found',
+            default => $payment->format('M j, Y'),
+        };
+
+        // Amount
+        $amountStatus = match (true) {
+            ! $amount => '0.00',
+            default => '₱ ' . number_format($amount, 2),
+        };
+
+        // Expiration
         $expirationStatus = match (true) {
-            ! $expires                      => 'No subscription',
-            $expires->isPast()              => $expires->format('M j, Y') . ' (Expired)',
+            ! $expires => 'No subscription',
+            $expires->isPast() => $expires->format('M j, Y') . ' (Expired)',
             $expires->lt(now()->addDays(30)) => $expires->format('M j, Y') . ' (Expires soon)',
-            default                         => $expires->format('M j, Y') . ' (Active)',
+            default => $expires->format('M j, Y') . ' (Active)',
         };
 
         return [
-            __('Branch')    => $record->branch?->branch_name ?? 'N/A',
-            __('Expires At') => $expirationStatus,
-            __('Status')    => $record->is_active ? 'Active' : 'Archived/Deceased',
+            __('Age')          => $record->age ? $record->age . ' Years Old' : 'N/A',
+            __('Last Payment') => $paymentStatus . ' ('. $amountStatus .')',
+            __('Expires At')   => $expirationStatus,
+            __('Status')       => $record->is_active ? 'Active' : 'Archived/Deceased',
+            __('Branch')       => $record->branch?->branch_name ?? 'N/A',
         ];
     }
 

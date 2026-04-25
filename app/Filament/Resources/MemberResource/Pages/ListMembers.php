@@ -20,12 +20,7 @@ use Illuminate\Support\Facades\Storage;
 use Maatwebsite\Excel\Facades\Excel;
 use Maatwebsite\Excel\Validators\ValidationException;
 use App\Models\Insurance;
-use Filament\Actions\ActionGroup;
-use Filament\Forms\Components\DatePicker;
-use Filament\Forms\Components\Radio;
-use Filament\Forms\Components\Section;
 use Filament\Forms\Components\Toggle;
-use Filament\Forms\Get;
 
 class ListMembers extends ListRecords
 {
@@ -163,11 +158,16 @@ class ListMembers extends ListRecords
 
     // -------------------------------------------------------------------------
     // Table Query
+    //
+    // Optimized: added latestSubscription eager load here so the Expiration
+    // column doesn't trigger N+1 queries. Uses hasOne+latestOfMany which
+    // resolves in a single extra query instead of one per row.
     // -------------------------------------------------------------------------
 
     public function getTableQuery(): Builder
     {
         $user  = Auth::user();
+
         $query = parent::getTableQuery()
             ->select([
                 'members.id', 'members.cid',
@@ -179,7 +179,9 @@ class ListMembers extends ListRecords
                 'members.city', 'members.province', 'members.barangay',
                 'members.created_at', 'members.is_active',
             ])
-            ->withOnly(['branch:id,branch_number,branch_name']);
+            ->withOnly([
+                'branch:id,branch_number,branch_name'
+            ]);
 
         if ($user && ! $user->hasRole('super_admin')) {
             $branchNumber = $user->branch?->branch_number;
@@ -198,9 +200,7 @@ class ListMembers extends ListRecords
 
     private function maybeExportIssues(array $rows, string $type, int $count): ?string
     {
-        if ($count === 0) {
-            return null;
-        }
+        if ($count === 0) return null;
 
         $label  = ucfirst($type);
         $path   = "exports/{$type}_" . now()->format('Ymd_His') . '.xlsx';

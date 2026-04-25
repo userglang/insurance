@@ -15,16 +15,30 @@ class ViewMember extends Page
 
     public Member $record;
 
+    // -------------------------------------------------------------------------
+    // Mount
+    //
+    // Optimized: eager load relationships needed for the view in one query
+    // instead of lazy-loading them one-by-one in the Blade template.
+    // -------------------------------------------------------------------------
+
     public function mount(Member $record): void
     {
         Gate::authorize('view', $record);
+
+        // Pre-load all relationships the view template typically needs
+        $record->loadMissing([
+            'branch:id,branch_number,branch_name',
+            'latestSubscription.productAccount:id,product_name,account_number',
+            'latestSubscription.insurance:id,insurance_name',
+        ]);
 
         $this->record = $record;
     }
 
     public function getTitle(): string
     {
-        return 'View Profile';
+        return "View Profile — {$this->record->full_name}";
     }
 
     public static function getRoute(?string $panel = null): string
@@ -47,7 +61,8 @@ class ViewMember extends Page
                 ->icon('heroicon-o-pencil-square')
                 ->color('primary')
                 ->url(fn () => route('filament.main.resources.members.edit', $this->record))
-                ->disabled($isInactive),
+                ->disabled($isInactive)
+                ->tooltip($isInactive ? 'Cannot edit an archived or deceased member.' : null),
 
             Actions\Action::make('download_pdf')
                 ->label('Print Profile')
@@ -56,7 +71,8 @@ class ViewMember extends Page
                 ->url(fn () => route('member.print', $this->record))
                 ->openUrlInNewTab()
                 ->requiresConfirmation()
-                ->disabled($isInactive),
+                ->disabled($isInactive)
+                ->tooltip($isInactive ? 'Cannot print an archived or deceased member.' : null),
         ];
     }
 }

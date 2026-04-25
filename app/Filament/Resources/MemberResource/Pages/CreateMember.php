@@ -51,20 +51,25 @@ class CreateMember extends CreateRecord
 
     private static function getPaymentInformationFieldset(): Fieldset
     {
+        // Cache active insurances for the duration of the request
+        $insurances = Insurance::where('is_active', true)->get(['id', 'insurance_name', 'amount']);
+        $firstId    = $insurances->first()?->id;
+
         return Fieldset::make('Payment Information')
             ->schema([
                 Grid::make(3)->schema([
                     Select::make('insurance_id')
                         ->label('Insurance Plan')
-                        ->options(fn () => Insurance::where('is_active', true)->pluck('insurance_name', 'id'))
+                        ->options($insurances->pluck('insurance_name', 'id'))
                         ->preload()
                         ->required()
                         ->placeholder('Select insurance plan...')
-                        ->default(fn () => Insurance::where('is_active', true)->first()?->id)
+                        ->default($firstId)
                         ->reactive()
-                        ->afterStateUpdated(function ($state, callable $set) {
+                        ->afterStateUpdated(function ($state, callable $set) use ($insurances): void {
                             if ($state) {
-                                $amount = Insurance::find($state)?->default_amount ?? 160.00;
+                                // Resolve from already-loaded collection — no extra query
+                                $amount = $insurances->firstWhere('id', $state)?->amount ?? 160.00;
                                 $set('amount', $amount);
                             }
                         })
@@ -132,7 +137,7 @@ class CreateMember extends CreateRecord
     protected function handleRecordCreation(array $data): Member
     {
         try {
-            return DB::transaction(function () use ($data) {
+            return DB::transaction(function () use ($data): Member {
                 $member = Member::create($this->cleanMemberData($data));
 
                 if (! empty($data['insurance_id'])) {
@@ -156,7 +161,7 @@ class CreateMember extends CreateRecord
 
             Notification::make()
                 ->title('Creation Failed')
-                ->body('Please try again.')
+                ->body($e->getMessage())   // surface the actual reason (e.g. duplicate member)
                 ->danger()
                 ->send();
 
@@ -170,7 +175,7 @@ class CreateMember extends CreateRecord
 
     private function cleanMemberData(array $data): array
     {
-        unset($data['insurance_id'], $data['account'], $data['account_number'], $data['amount']);
+        unset($data['insurance_id'], $data['account'], $data['account_number'], $data['amount'], $data['payment_date'], $data['activated_at']);
 
         return array_map(
             fn ($value) => is_string($value) ? trim(strip_tags($value)) : $value,
@@ -180,6 +185,7 @@ class CreateMember extends CreateRecord
 
     private function createSubscription(Member $member, array $data): void
     {
+        // Check if this member already has any subscription for this insurance
         $isRenewal = Subscription::where('member_id', $member->id)
             ->where('insurance_id', $data['insurance_id'])
             ->exists();
