@@ -299,7 +299,7 @@ class MemberResource extends Resource
                             ->displayFormat('F j, Y')
                             ->format('Y-m-d')
                             ->maxDate(now()->subYears(17))
-                            ->minDate(now()->subYears(100))
+                            ->minDate(now()->subYears(120))
                             ->beforeOrEqual('today')
                             ->helperText('Must be at least 18 years old'),
                     ]),
@@ -857,6 +857,7 @@ class MemberResource extends Resource
                         ->icon('heroicon-o-document-arrow-down')
                         ->color('info')
                         ->action(function (Collection $records) {
+
                             $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
                             $sheet       = $spreadsheet->getActiveSheet();
 
@@ -869,13 +870,28 @@ class MemberResource extends Resource
 
                             $sheet->fromArray($headers, null, 'A1');
 
+                            // ✅ Highlight ONLY selected headers (light green)
+                            $highlightColumns = ['P', 'Q', 'R', 'S', 'T', 'U'];
+
+                            foreach ($highlightColumns as $col) {
+                                $sheet->getStyle("{$col}1")
+                                    ->getFill()
+                                    ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                                    ->getStartColor()
+                                    ->setARGB('FFCCFFCC'); // light green
+
+                                $sheet->getStyle("{$col}1")
+                                    ->getFont()
+                                    ->setBold(true);
+                            }
+
                             $totalColumns = count($headers);
                             $totalRows    = $records->count() + 1;
 
                             foreach (range(1, $totalColumns) as $colIndex) {
                                 $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($colIndex);
 
-                                // Skip Amount column (index 18 = column R) — keep it numeric
+                                // Skip Amount column (index 18 = column R)
                                 if ($colIndex === 18) continue;
 
                                 $sheet->getStyle("{$colLetter}1:{$colLetter}{$totalRows}")
@@ -907,7 +923,7 @@ class MemberResource extends Resource
                                     (string) $record->created_at->format('m/d/Y'),
                                     (string) ($sub?->productAccount?->product_name ?? ''),
                                     (string) ($sub?->productAccount?->account_number ?? ''),
-                                    $sub?->amount ?? 0, // ← numeric for summability
+                                    $sub?->amount ?? 0,
                                     '',
                                     (string) ($sub?->expires_at?->format('m/d/Y') ?? ''),
                                     'RENEWAL',
@@ -917,7 +933,6 @@ class MemberResource extends Resource
                                 foreach ($rowData as $colIndex => $value) {
                                     $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($colIndex + 1);
 
-                                    // Amount column (index 17 = column R) — write as numeric
                                     if ($colIndex === 17) {
                                         $sheet->setCellValue("{$colLetter}{$row}", $value);
                                         $sheet->getStyle("{$colLetter}{$row}")
@@ -932,7 +947,7 @@ class MemberResource extends Resource
                                     }
                                 }
 
-                                // Highlight entire row based on age
+                                // Highlight row based on age
                                 $age = (int) $record->age;
 
                                 if ($age >= 70) {
@@ -943,9 +958,7 @@ class MemberResource extends Resource
                                         ->setARGB('FFFF0000');
 
                                     $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
-                                        ->getFont()
-                                        ->getColor()
-                                        ->setARGB('FFFFFFFF');
+                                        ->getFont()->getColor()->setARGB('FFFFFFFF');
 
                                 } elseif ($age >= 65) {
                                     $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
@@ -955,12 +968,10 @@ class MemberResource extends Resource
                                         ->setARGB('FFFF6600');
 
                                     $sheet->getStyle("A{$row}:{$lastColumn}{$row}")
-                                        ->getFont()
-                                        ->getColor()
-                                        ->setARGB('FFFFFFFF');
+                                        ->getFont()->getColor()->setARGB('FFFFFFFF');
                                 }
 
-                                // Highlight Amount column (R) yellow if not 180 or 360
+                                // Highlight Amount if invalid
                                 $amount       = (float) ($sub?->amount ?? 0);
                                 $validAmounts = [180, 360];
 
@@ -972,21 +983,27 @@ class MemberResource extends Resource
                                         ->setARGB('FFFFFF00');
 
                                     $sheet->getStyle("R{$row}")
-                                        ->getFont()
-                                        ->getColor()
-                                        ->setARGB('FF000000');
+                                        ->getFont()->getColor()->setARGB('FF000000');
                                 }
 
                                 $row++;
                             }
 
-                            // SUM row at the bottom
+                            // SUM row
                             $sumRow = $row;
-                            $sheet->setCellValueExplicit("A{$sumRow}", 'TOTAL', \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+
+                            $sheet->setCellValueExplicit(
+                                "A{$sumRow}",
+                                'TOTAL',
+                                \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING
+                            );
+
                             $sheet->setCellValue("R{$sumRow}", "=SUM(R2:R" . ($sumRow - 1) . ")");
+
                             $sheet->getStyle("R{$sumRow}")
                                 ->getNumberFormat()
                                 ->setFormatCode('#,##0.00');
+
                             $sheet->getStyle("A{$sumRow}:R{$sumRow}")
                                 ->getFont()
                                 ->setBold(true);

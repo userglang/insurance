@@ -84,6 +84,7 @@ class CreateMember extends CreateRecord
                             'ATM'                        => 'ATM',
                             'Loan'                       => 'Loan',
                             'Cash'                       => 'Cash',
+                            'Others'                       => 'Others',
                         ])
                         ->placeholder('Select account type...')
                         ->columnSpan(1),
@@ -112,8 +113,8 @@ class CreateMember extends CreateRecord
                         ->native(true)
                         ->required()
                         ->default(now())
-                        ->minDate(now()->subDays(60))
-                        ->maxDate(now()->addDays(60))
+                        ->minDate(now()->subDays(120))
+                        ->maxDate(now()->addDays(120))
                         ->displayFormat('M j, Y')
                         ->columnSpan(1),
 
@@ -122,8 +123,8 @@ class CreateMember extends CreateRecord
                         ->native(true)
                         ->required()
                         ->default(now())
-                        ->minDate(now()->subDays(60))
-                        ->maxDate(now()->addDays(60))
+                        ->minDate(now()->subDays(120))
+                        ->maxDate(now()->addDays(120))
                         ->displayFormat('M j, Y')
                         ->columnSpan(1),
                 ]),

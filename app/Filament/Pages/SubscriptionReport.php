@@ -9,6 +9,7 @@ use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Section;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Form;
+use Filament\Forms\Set;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Filament\Tables\Actions\Action;
@@ -67,7 +68,8 @@ class SubscriptionReport extends Page implements HasTable
                             ->native(true)
                             ->required()
                             ->reactive()
-                            ->afterStateUpdated(fn ($state) => $this->startDate = $state),
+                            ->afterStateUpdated(fn ($state) => $this->startDate = $state)
+                            ->rules(['date']),
 
                         DatePicker::make('end_date')
                             ->label('End Date')
@@ -75,13 +77,38 @@ class SubscriptionReport extends Page implements HasTable
                             ->native(true)
                             ->required()
                             ->reactive()
-                            ->afterStateUpdated(function ($state) {
+                            ->afterStateUpdated(function ($state, Set $set) {
+                                if (!$state) return;
+
+                                $parsed = \Carbon\Carbon::createFromFormat('Y-m-d', $state);
+                                if (!$parsed || $parsed->format('Y-m-d') !== $state) {
+                                    $set('end_date', null);
+                                    session()->flash('error', 'End Date is not a valid date.');
+                                    return;
+                                }
+
                                 $this->endDate = $state;
 
-                                if ($this->startDate && $state && $state < $this->startDate) {
+                                if ($this->startDate && $state < $this->startDate) {
                                     session()->flash('error', 'End Date must be on or after the Start Date.');
                                 }
                             })
+                            ->rules([
+                                'date',
+                                function (string $attribute, mixed $value, \Closure $fail) {
+                                    if (!$value) return;
+
+                                    $parsed = \Carbon\Carbon::createFromFormat('Y-m-d', $value);
+                                    if (!$parsed || $parsed->format('Y-m-d') !== $value) {
+                                        $fail('The end date is not a valid date.');
+                                        return;
+                                    }
+
+                                    if ($this->startDate && $value < $this->startDate) {
+                                        $fail('The end date must be on or after the start date.');
+                                    }
+                                },
+                            ])
                             ->helperText('Must be on or after the start date.'),
 
                         Select::make('branch_id')

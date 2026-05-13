@@ -2,111 +2,119 @@
 
 namespace App\Http\Middleware;
 
-use Carbon\Carbon;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Log;
-use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Support\Facades\RateLimiter;
+use Symfony\Component\HttpFoundation\Response;
+use App\Models\User;
 
 class RequiredChangePassword
 {
-    /**
-     * Handle an incoming request.
-     *
-     * @param  \Illuminate\Http\Request  $request
-     * @param  \Closure  $next
-     * @return \Symfony\Component\HttpFoundation\Response
-     */
+    private const PASSWORD_MAX_AGE_DAYS = 90;
+    private const RATE_LIMIT_MAX_ATTEMPTS = 5;
+    private const CACHE_TTL = 86400; // 24 hours
+    private const CHANGE_PASSWORD_ROUTE = 'filament.main.pages.change-password';
+    private const LOGOUT_ROUTE = 'filament.main.auth.logout';
+
+    private const EXCLUDED_ROUTES = [
+        self::CHANGE_PASSWORD_ROUTE,
+        self::LOGOUT_ROUTE,
+    ];
+
     public function handle(Request $request, Closure $next): Response
     {
-
-        // Skip middleware if user is not authenticated
-        if (!Auth::check()) {
+        if (!Auth::check() || $this->isExcludedRoute($request)) {
             return $next($request);
         }
 
+        if ($this->isRateLimited($request)) {
+            return response()->json(
+                ['error' => 'Too many requests. Please try again later.'],
+                Response::HTTP_TOO_MANY_REQUESTS
+            );
+        }
+
+        /** @var User $user */
         $user = Auth::user();
 
-        // Skip if user is already on the change-password page
-        if ($request->routeIs('filament.main.pages.change-password')) {
-            return $next($request);
+        $reason = $this->getPasswordChangeReason($user);
+
+        if ($reason !== null) {
+            return $this->redirectToPasswordChange($reason);
         }
 
-        // Skip if it's the logout route
-        if ($request->routeIs('filament.main.auth.logout')) {
-            return $next($request);
-        }
-
-        // Rate limit the request to prevent brute force attacks on login and password change
-        if ($this->isRateLimited($request)) {
-            return response()->json(['error' => 'Too many requests. Please try again later.'], 429);
-        }
-
-        // Force all authenticated users with default passwords to change them
-        if ($this->hasDefaultPassword($user)) {
-            return redirect()->route('filament.main.pages.change-password')
-                ->with('warning', 'You must change your default password before continuing.');
-        }
-
-        // Check if password is older than 90 days and force password change
-        if ($this->isPasswordOld($user)) {
-            return redirect()->route('filament.main.pages.change-password')
-                ->with('warning', 'Your password is older than 90 days. Please change it.');
-        }
-
-        // Proceed with the request
         return $next($request);
     }
 
-    /**
-     * Check if the request is rate-limited.
-     *
-     * @param \Illuminate\Http\Request $request
-     * @return bool
-     */
+    private function isExcludedRoute(Request $request): bool
+    {
+        return $request->routeIs(...self::EXCLUDED_ROUTES);
+    }
+
     private function isRateLimited(Request $request): bool
     {
-        $key = 'request:' . $request->ip();
-        return RateLimiter::tooManyAttempts($key, 5); // Allow only 5 requests per minute
+        return RateLimiter::tooManyAttempts(
+            'request:' . $request->ip(),
+            self::RATE_LIMIT_MAX_ATTEMPTS
+        );
     }
 
     /**
-     * Check if the user has a default password.
-     *
-     * @param  \App\Models\User  $user
-     * @return bool
+     * Returns the redirect reason if a password change is required, or null if not.
+     * Consolidates all checks in one place to avoid redundant cache hits.
      */
-    private function hasDefaultPassword($user): bool
+    private function getPasswordChangeReason(User $user): ?string
     {
-        $defaultPasswords = config('security.default_passwords');
-
-        foreach ($defaultPasswords as $defaultPassword) {
-            $defaultPassword = trim($defaultPassword);
-
-            if (Hash::check($defaultPassword, $user->password)) {
-                return true;
-            }
+        if ($this->hasDefaultPassword($user)) {
+            return 'You must change your default password before continuing.';
         }
 
-        return false;
+        if ($this->isPasswordExpired($user)) {
+            return sprintf(
+                'Your password is older than %d days. Please change it.',
+                self::PASSWORD_MAX_AGE_DAYS
+            );
+        }
+
+        return null;
     }
 
+    /**
+     * Cached for 24 hours per user.
+     * Cache key includes a password fingerprint so it auto-invalidates on password change.
+     */
+    private function hasDefaultPassword(User $user): bool
+    {
+        $cacheKey = "default_password_check:{$user->id}:" . substr($user->password, -8);
+
+        return Cache::remember($cacheKey, self::CACHE_TTL, function () use ($user) {
+            return collect(config('security.default_passwords', []))
+                ->map(fn(string $p) => trim($p))
+                ->contains(fn(string $password) => Hash::check($password, $user->password));
+        });
+    }
 
     /**
-     * Check if the user's password is older than 90 days.
-     *
-     * @param  \App\Models\User  $user
-     * @return bool
+     * Cached for 24 hours per user.
+     * Must call Cache::forget("password_expired_check:{$user->id}") after a password change.
      */
-    private function isPasswordOld($user): bool
+    private function isPasswordExpired(User $user): bool
     {
-        $passwordLastChangedAt = $user->updated_at;  // You can use 'password_last_changed' if it's custom
-        $passwordAgeInDays = $passwordLastChangedAt->diffInDays(Carbon::now());
+        $cacheKey = "password_expired_check:{$user->id}";
 
-        // If password is older than 90 days, force password change
-        return $passwordAgeInDays > 90;
+        return Cache::remember($cacheKey, self::CACHE_TTL, function () use ($user) {
+            $lastChanged = $user->password_changed_at ?? $user->updated_at;
+            return now()->diffInDays($lastChanged) > self::PASSWORD_MAX_AGE_DAYS;
+        });
+    }
+
+    private function redirectToPasswordChange(string $reason): Response
+    {
+        return redirect()
+            ->route(self::CHANGE_PASSWORD_ROUTE)
+            ->with('warning', $reason);
     }
 }
