@@ -17,6 +17,7 @@ use Filament\Resources\Pages\CreateRecord;
 use Filament\Resources\Pages\CreateRecord\Concerns\HasWizard;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class CreateMember extends CreateRecord
 {
@@ -139,6 +140,14 @@ class CreateMember extends CreateRecord
     {
         try {
             return DB::transaction(function () use ($data): Member {
+
+                Member::findSimilarMembers(
+                    firstName: $data['first_name'],
+                    lastName: $data['last_name'],
+                    middleName: $data['middle_name'] ?? null,
+                    birthDate: $data['birth_date'] ?? null,
+                );
+
                 $member = Member::create($this->cleanMemberData($data));
 
                 if (! empty($data['insurance_id'])) {
@@ -157,16 +166,33 @@ class CreateMember extends CreateRecord
 
                 return $member;
             });
-        } catch (\Exception $e) {
-            Log::error('Member creation failed', ['error' => $e->getMessage()]);
 
+        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+            // Handles MySQL SQLSTATE[23000] duplicate entry errors
             Notification::make()
-                ->title('Creation Failed')
-                ->body($e->getMessage())   // surface the actual reason (e.g. duplicate member)
+                ->title('Duplicate Member Detected')
+                ->body('A member with the same name and birth date already exists. Please contact system administrator')
                 ->danger()
                 ->send();
 
-            throw $e;
+            throw ValidationException::withMessages([
+                'first_name' => 'A member with the same name and birth date already exists.',
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Member creation failed', [
+                'error' => $e->getMessage()
+            ]);
+
+            Notification::make()
+                ->title('Creation Failed')
+                ->body($e->getMessage())
+                ->danger()
+                ->send();
+
+            throw ValidationException::withMessages([
+                'first_name' => $e->getMessage(),
+            ]);
         }
     }
 
