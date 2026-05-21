@@ -186,7 +186,7 @@ class CreateMember extends CreateRecord
 
             Notification::make()
                 ->title('Creation Failed')
-                ->body($e->getMessage())
+                ->body('Member already exist in your database. Please contact system administrator to activate this member')
                 ->danger()
                 ->send();
 
