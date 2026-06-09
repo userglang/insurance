@@ -302,15 +302,40 @@ class SubscriptionReport extends Page implements HasTable
             // Headers
             $headers = [
                 'ID', 'CID', 'Member Name', 'Branch', 'Email', 'Phone', 'Address',
-                'Age', 'Gender', 'Marital Status', 'Occupation', 'Joined Date',
-                'Insurance', 'Status', 'Account Name', 'Account Number', 'Amount',
-                'Payment Date', 'Expires Date', 'Remark', 'Activated Date',  'Note: Date Format',
+                'Age', 'Birth Date', 'Gender', 'Marital Status', 'Occupation',
+                'Insurance', 'Status', 'Joined Date', 'Account Name', 'Account Number', 'Amount',
+                'Payment Date', 'Subscription Date', 'Remarks', 'Expires Date', 'Note: Date Format',
             ];
 
+            // Create headers
             foreach ($headers as $colIndex => $header) {
                 $cell = $sheet->getCellByColumnAndRow($colIndex + 1, 1);
                 $cell->setValue($header);
-                $cell->getStyle()->getFont()->setBold(true);
+
+                // Make all headers bold
+                $sheet->getStyleByColumnAndRow($colIndex + 1, 1)
+                    ->getFont()
+                    ->setBold(true);
+            }
+
+            // Highlight ONLY selected headers (P–U)
+            $highlightColumns = ['P', 'Q', 'R', 'S', 'T', 'U'];
+
+            foreach ($highlightColumns as $column) {
+                $sheet->getStyle($column . '1')->applyFromArray([
+                    'fill' => [
+                        'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
+                        'startColor' => [
+                            'argb' => 'C6EFCE', // Light Green
+                        ],
+                    ],
+                    'font' => [
+                        'bold' => true,
+                        'color' => [
+                            'argb' => '006100', // Dark Green Text
+                        ],
+                    ],
+                ]);
             }
 
             // Amount column index (1-based): 'Amount' is the 17th column
@@ -331,19 +356,20 @@ class SubscriptionReport extends Page implements HasTable
                     $member->contact_number,
                     $member->full_address,
                     $member->age,
+                    $member->birth_date,
                     $member->gender_label,
                     $member->marital_status_label,
                     $member->occupation,
-                    $member->created_at->format('m/d/Y'),
                     $sub->insurance?->insurance_name,
                     $status,
+                    $member->created_at->format('m/d/Y'),
                     $account?->product_name,
                     $account?->account_number,
                     $sub->amount,
                     $sub->payment_date?->format('m/d/Y'),
-                    $sub->expires_at?->format('m/d/Y'),
-                    $sub->remark,
                     $sub->activated_at?->format('m/d/Y'),
+                    $sub->remark,
+                    $sub->expires_at?->format('m/d/Y'),
                     'month/day/Year (12/18/2025)',
                 ];
 
