@@ -339,7 +339,7 @@ class SubscriptionReport extends Page implements HasTable
             }
 
             // Amount column index (1-based): 'Amount' is the 17th column
-            $amountColIndex = 17;
+            $amountColIndex = 18;
 
             $rowIndex = 2;
             foreach ($subscriptions as $sub) {

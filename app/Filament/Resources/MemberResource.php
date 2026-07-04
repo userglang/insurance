@@ -109,6 +109,10 @@ class MemberResource extends Resource
                 'branch_number',
                 'is_active',
             ])
+            ->where(function ($q) {
+                $q->whereNull('remark')
+                ->orWhere('remark', 'not like', '%Merged into:%');
+            })
             ->with([
                 'branch:id,branch_number,branch_name',
                 'subscriptions' => fn ($q) => $q
@@ -649,29 +653,6 @@ class MemberResource extends Resource
                     ->default('accepted')
                     ->placeholder('All Applications'),
 
-                Tables\Filters\SelectFilter::make('branch_number')
-                    ->label('Branch')
-                    ->options(function () {
-                        $user = Auth::user();
-
-                        if ($user?->hasRole('super_admin')) {
-                            return Cache::remember('branch_filter_options', 3600,
-                                fn () => Branch::pluck('branch_name', 'branch_number')
-                            );
-                        }
-
-                        if ($user?->branch_number) {
-                            return Branch::where('branch_number', $user->branch_number)
-                                ->pluck('branch_name', 'branch_number');
-                        }
-
-                        return [];
-                    })
-                    ->searchable()
-                    ->preload()
-                    ->placeholder('All Branches')
-                    ->visible(fn () => Auth::user()?->hasRole('super_admin')),
-
                 Tables\Filters\SelectFilter::make('gender')
                     ->label('Gender')
                     ->options(['Male' => 'Male', 'Female' => 'Female', 'Other' => 'Other'])
@@ -700,32 +681,91 @@ class MemberResource extends Resource
                         };
                     }),
 
+
+                Tables\Filters\SelectFilter::make('branch_number')
+                    ->label('Branch')
+                    ->options(function () {
+                        $user = Auth::user();
+
+                        if ($user?->hasRole('super_admin')) {
+                            return Cache::remember('branch_filter_options', 3600,
+                                fn () => Branch::pluck('branch_name', 'branch_number')
+                            );
+                        }
+
+                        if ($user?->branch_number) {
+                            return Branch::where('branch_number', $user->branch_number)
+                                ->pluck('branch_name', 'branch_number');
+                        }
+
+                        return [];
+                    })
+                    ->searchable()
+                    ->columnSpanFull()
+                    ->preload()
+                    ->placeholder('All Branches')
+                    ->visible(fn () => Auth::user()?->hasRole('super_admin')),
+
                 Tables\Filters\Filter::make('expiration_date_range')
                     ->label('Expiration Date Range')
+                    ->columnSpanFull()
                     ->form([
+                        Forms\Components\Toggle::make('enabled')
+                            ->label('Filter by expiration date')
+                            ->live()
+                            ->default(true),
+
                         Forms\Components\DatePicker::make('expires_from')
                             ->label('Expires From')
                             ->placeholder('Select start date')
-                            ->default(now()->subMonth()->startOfMonth()),
+                            ->default(now()->subMonth()->startOfMonth())
+                            ->live()
+                            ->disabled(fn (Forms\Get $get) => ! $get('enabled'))
+                            ->maxDate(fn (Forms\Get $get) => $get('expires_until') ?: null),
 
                         Forms\Components\DatePicker::make('expires_until')
                             ->label('Expires Until')
                             ->placeholder('Select end date')
-                            ->default(now()->subMonth()->endOfMonth()),
+                            ->default(now()->subMonth()->endOfMonth())
+                            ->live()
+                            ->disabled(fn (Forms\Get $get) => ! $get('enabled'))
+                            ->minDate(fn (Forms\Get $get) => $get('expires_from') ?: null),
                     ])
                     ->query(function (Builder $query, array $data): Builder {
-                        $from  = $data['expires_from']  ?? now()->subMonth()->startOfMonth();
-                        $until = $data['expires_until'] ?? now()->addMonth()->endOfMonth();
+                        if (empty($data['enabled'])) {
+                            return $query;
+                        }
+
+                        $from  = $data['expires_from']  ?? null;
+                        $until = $data['expires_until'] ?? null;
+
+                        if (! $from && ! $until) {
+                            return $query;
+                        }
 
                         return $query
-                            ->whereRaw(
+                            ->when($from, fn (Builder $q) => $q->whereRaw(
                                 '(SELECT expires_at FROM subscriptions WHERE member_id = members.id ORDER BY expires_at DESC LIMIT 1) >= ?',
                                 [$from]
-                            )
-                            ->whereRaw(
+                            ))
+                            ->when($until, fn (Builder $q) => $q->whereRaw(
                                 '(SELECT expires_at FROM subscriptions WHERE member_id = members.id ORDER BY expires_at DESC LIMIT 1) <= ?',
                                 [$until]
-                            );
+                            ));
+                    })
+                    ->indicateUsing(function (array $data): ?string {
+                        if (empty($data['enabled'])) {
+                            return null;
+                        }
+
+                        $from  = $data['expires_from']  ?? null;
+                        $until = $data['expires_until'] ?? null;
+
+                        if (! $from && ! $until) {
+                            return null;
+                        }
+
+                        return 'Expires: ' . ($from ?: '…') . ' to ' . ($until ?: '…');
                     }),
             ])
 
