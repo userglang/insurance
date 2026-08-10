@@ -183,6 +183,16 @@ class SubscriptionReport extends Page implements HasTable
                         $isActive = $column->getRecord()->member->is_active ?? true;
                         return $isActive ? $state : 'archived';
                     }),
+
+                TextColumn::make('createdBy.name')
+                    ->label('Created by')
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
+
+                TextColumn::make('updatedBy.name')
+                    ->label('Updated by')
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
                 Filter::make('status')
@@ -304,7 +314,7 @@ class SubscriptionReport extends Page implements HasTable
                 'ID', 'CID', 'Member Name', 'Branch', 'Email', 'Phone', 'Address',
                 'Age', 'Birth Date', 'Gender', 'Marital Status', 'Occupation',
                 'Insurance', 'Status', 'Joined Date', 'Account Name', 'Account Number', 'Amount',
-                'Payment Date', 'Subscription Date', 'Remarks', 'Expires Date', 'Note: Date Format',
+                'Payment Date', 'Subscription Date', 'Remarks', 'Expires Date', 'Note: Date Format', 'Created By', 'Updated By',
             ];
 
             // Create headers
@@ -371,6 +381,9 @@ class SubscriptionReport extends Page implements HasTable
                     $sub->remark,
                     $sub->expires_at?->format('m/d/Y'),
                     'month/day/Year (12/18/2025)',
+                    $sub->createdBy?->name,
+                    $sub->updatedBy?->name,
+
                 ];
 
                 foreach ($row as $colIndex => $value) {
